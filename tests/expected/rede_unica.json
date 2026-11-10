@@ -1,0 +1,10 @@
+{
+ "_fonte": "c\u00e1lculo anal\u00edtico: Tx = C\u00b7q\u00b7K\u00b7P/(86400\u00b7L) + infiltra\u00e7\u00e3o; Q = Tx\u00b7L",
+ "txi_ls_km": 20.883333333333333,
+ "txf_ls_km": 50.050000000000004,
+ "qj_i": 2.0883333333333334,
+ "qj_f": 5.005000000000001,
+ "d": 150.0,
+ "rec_m": 1.35,
+ "i_nbr_referencia": 0.0038909600683755606
+}

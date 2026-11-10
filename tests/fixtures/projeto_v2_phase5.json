@@ -1,0 +1,46 @@
+{
+  "parametros": {
+    "projeto": "Migração Fase 5",
+    "responsavel": "Teste Automatizado",
+    "local": "Área de teste",
+    "pop_ini": 1000,
+    "pop_fin": 1500,
+    "per_capita": 180,
+    "coef_retorno": 0.8,
+    "k1": 1.2,
+    "k2": 1.5,
+    "infiltracao": 0.2,
+    "q_min": 1.5,
+    "d_min": 150,
+    "prof_min": 1.5,
+    "prof_max": 4.5,
+    "tensao_min": 1.0,
+    "v_max": 5.0,
+    "degrau_max": 0.65
+  },
+  "trechos": [
+    {
+      "coletor": "1",
+      "trecho": "1-2",
+      "pv_m": "PV-01",
+      "ct_m": 110.0,
+      "pv_j": "PV-02",
+      "ct_j": 108.5,
+      "L": 80.0,
+      "qc_i": 0.4,
+      "qc_f": 0.8,
+      "d_fix": 150
+    },
+    {
+      "coletor": "1",
+      "trecho": "2-3",
+      "pv_m": "PV-02",
+      "ct_m": 108.5,
+      "pv_j": "PV-03",
+      "ct_j": 106.7,
+      "L": 75.0,
+      "qc_i": 0.0,
+      "qc_f": 0.5
+    }
+  ]
+}

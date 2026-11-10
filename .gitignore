@@ -1,0 +1,31 @@
+# --- Godot ---
+.godot/
+*.tmp~
+*.translation
+
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Builds (publicados nos Releases do GitHub, não no repositório) ---
+dist/
+*.zip
+
+# --- Relatórios gerados pelos testes (contêm caminhos locais) ---
+tests/report/
+
+# --- Arquivos internos do Craft Anything (histórico da sessão, dados locais) ---
+agent-session.jsonl
+build-activity.log
+craft.json
+feed.json
+usage.json
+investigation.cany/
+inbox/
+capture/
+checks/
+reference/
+
+# --- Capturas temporárias do app ---
+app/shots/
+versoes/*/shots/

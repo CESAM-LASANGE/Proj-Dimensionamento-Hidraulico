@@ -1,0 +1,36 @@
+{
+  "type": "FeatureCollection",
+  "name": "interferencias_phase3",
+  "crs": {
+    "type": "name",
+    "properties": {"name": "EPSG:31983"}
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "AG-001",
+        "camada": "AGUA_EXISTENTE",
+        "origem": "cadastro_teste",
+        "data": "2026-01-15"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[10, 20], [90, 20]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "DR-001",
+        "camada": "DRENAGEM",
+        "origem": "levantamento_teste",
+        "data": "2026-01-16"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [[20, 80], [80, 80]]
+      }
+    }
+  ]
+}
