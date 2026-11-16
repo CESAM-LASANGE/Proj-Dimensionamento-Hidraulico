@@ -11,6 +11,12 @@ extends Control
 ##   Shift + botão 1 sobre trecho ... marca o coletor inteiro
 ##   Ctrl + botão 1 sobre trecho .... marca / desmarca o trecho
 ##   Ctrl + botão 2 sobre nó ........ mostra o nome do coletor
+##   Botão 1 + arrastar na área vazia  caixa de seleção (seleciona o que estiver inteiro dentro)
+##   Ctrl + caixa / Ctrl + clique ... soma à seleção / alterna nó ou trecho
+##   Botão 1 sobre nó ou trecho ..... seleciona só ele
+##   Del ............................ apaga a seleção (com confirmação)
+##   F9 ORTO ........................ trecho/arrasto só na horizontal ou na vertical
+##   F10 OSNAP ...................... magnetismo: PV, ponto cotado, vértice de rua, curva de nível, rua
 ##   Roda / botão do meio ........... zoom / deslocar
 
 const Net = preload("res://net.gd")
@@ -21,7 +27,8 @@ const CORES_CAMADA := [Color(0.0, 0.55, 0.85), Color(0.15, 0.6, 0.25), Color(0.7
 signal cursor_moved(e: float, n: float, z: float, dist: float)
 
 var main
-var marked := {}
+var marked := {} # trechos selecionados (id → true)
+var sel_nos := {} # nós selecionados (id → true)
 var mode := "" # "", "pan", "janela"
 
 var scale_px := 1.0
@@ -37,6 +44,17 @@ var panning := false
 var pan_last := Vector2.ZERO
 var win_on := false
 var win_a := Vector2.ZERO
+var box_on := false
+var box_a := Vector2.ZERO
+var box_somar := false
+## Magnetismo (osnap): raio de captura em pixels.
+const OSNAP_PX := 12.0
+var snap := {} # alvo do osnap sob o cursor ({} = nenhum)
+var cursor_w := Vector2.ZERO # posição efetiva do cursor (com osnap / orto), em metros
+var cursor_orto := false
+var previa := {} # prévia da cota do próximo PV: raio de busca, retas, cota
+var drag_origem := Vector2.ZERO
+var drag_snap := {}
 var mouse_s := Vector2.ZERO
 var rastro := {}
 var destaque := Vector2(NAN, NAN)
@@ -369,6 +387,8 @@ func _draw_rede(c: Control, _vis: Rect2, pal: Dictionary) -> void:
 		if res_nodes.has(int(n["id"])):
 			tipo = str(res_nodes[int(n["id"])]["tipo"])
 		_simbolo(c, s, tipo, azul)
+		if sel_nos.has(int(n["id"])):
+			c.draw_rect(Rect2(s - Vector2(9, 9), Vector2(18, 18)), verm, false, 1.6)
 		if rot_no:
 			c.draw_string(_font, s + Vector2(7, -5), str(n["nome"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.05, 0.05, 0.25))
 			c.draw_string(_font, s + Vector2(7, 9), main.fmt(n["ct"], 2), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.1, 0.5, 0.75))
@@ -414,7 +434,8 @@ func _draw_over() -> void:
 	if _font == null:
 		_font = get_theme_default_font()
 	var c := over
-	if bool(main.opts.get("rastro", true)) and not rastro.is_empty():
+	_draw_previa(c)
+	if bool(main.opts.get("rastro", true)) and not rastro.is_empty() and (previa.is_empty() or not (tracing or drag_node >= 0)):
 		for rr in rastro.get("raios", []):
 			c.draw_line(w2s(rr[0]), w2s(rr[1]), Color(0.5, 0.5, 0.5, 0.6), 1.0)
 		var par: Array = rastro.get("par", [])
@@ -424,17 +445,206 @@ func _draw_over() -> void:
 		var n = Net.node_map(main.proj).get(trace_from)
 		if n != null:
 			var a := w2s(Net.pos(n))
-			var dist := Net.pos(n).distance_to(s2w(mouse_s))
+			var fim := w2s(cursor_w)
+			var dist := Net.pos(n).distance_to(cursor_w)
 			var longe := dist > float(main.proj["params"]["dist_max_pv"])
 			var col := Color(0.9, 0.1, 0.1) if longe else Color(0.1, 0.3, 0.9)
-			c.draw_dashed_line(a, mouse_s, col, 1.5, 6.0)
-			c.draw_string(_font, mouse_s + Vector2(12, 18), "%s m%s" % [main.fmt(dist, 2), "  > dist. máx. entre PVs!" if longe else ""],
-				HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
+			c.draw_dashed_line(a, fim, col, 1.5, 6.0)
+			c.draw_string(_font, fim + Vector2(12, 46 if not snap.is_empty() else 18), "%s m%s%s" % [main.fmt(dist, 2), "  ORTO" if cursor_orto else "",
+				"  > dist. máx. entre PVs!" if longe else ""], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
+	if tracing and trace_from >= 0:
+		var alvo := hit_no(mouse_s)
+		if alvo >= 0 and alvo != trace_from:
+			var r := Net.pode_ligar(main.proj, trace_from, alvo)
+			if not bool(r["ok"]):
+				var sa := w2s(Net.pos(Net.node_map(main.proj)[alvo]))
+				var curto: String = {"sem_saida": "PV sem saída: ligação não permitida", "max_entradas": "PV já tem %d entradas" % Net.MAX_ENTRADAS,
+					"laco": "formaria um laço"}.get(str(r["regra"]), "ligação não permitida")
+				c.draw_arc(sa, 11, 0, TAU, 28, Color(0.9, 0.1, 0.1), 2.5)
+				c.draw_string(_font, sa + Vector2(14, -12), curto, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(0.85, 0.1, 0.1))
+	if box_on:
+		var rb := Rect2(box_a, mouse_s - box_a).abs()
+		var cb := Color(0.1, 0.1, 0.1)
+		c.draw_rect(rb, Color(0.2, 0.45, 0.95, 0.07))
+		for seg in [[rb.position, Vector2(rb.end.x, rb.position.y)], [Vector2(rb.end.x, rb.position.y), rb.end],
+				[rb.end, Vector2(rb.position.x, rb.end.y)], [Vector2(rb.position.x, rb.end.y), rb.position]]:
+			c.draw_dashed_line(seg[0], seg[1], cb, 1.0, 4.0)
+	_draw_snap(c)
 	if win_on:
 		c.draw_rect(Rect2(win_a, mouse_s - win_a).abs(), Color(0.1, 0.4, 0.9), false, 1.0)
 		c.draw_rect(Rect2(win_a, mouse_s - win_a).abs(), Color(0.1, 0.4, 0.9, 0.08))
 	if not is_nan(destaque.x):
 		c.draw_arc(w2s(destaque), 22, 0, TAU, 40, Color(0.9, 0.0, 0.8), 3.0)
+
+
+## Raio de busca e retas da interpolação em volta do ponto onde o próximo PV vai ficar.
+func _draw_previa(c: Control) -> void:
+	if previa.is_empty() or not (tracing or drag_node >= 0) or not bool(main.opts.get("rastro", true)):
+		return
+	var cs := w2s(previa["w"])
+	var azul := Color(0.15, 0.45, 0.85)
+	var rpx := float(previa.get("raio", 0.0)) * scale_px
+	if rpx > 6.0 and rpx < 20000.0:
+		c.draw_circle(cs, rpx, Color(azul, 0.05))
+		c.draw_arc(cs, rpx, 0, TAU, 128, Color(azul, 0.75), 1.2, true)
+	for rr in previa.get("raios", []):
+		c.draw_line(w2s(rr[0]), w2s(rr[1]), Color(0.45, 0.45, 0.45, 0.7), 1.0)
+	var par: Array = previa.get("par", [])
+	if par.size() == 2:
+		c.draw_line(w2s(par[0]), w2s(par[1]), Color(0.85, 0.0, 0.85), 2.0)
+	if previa.has("ponto"):
+		c.draw_line(cs, w2s(previa["ponto"]), Color(0.85, 0.0, 0.85), 2.0)
+	var txt := ""
+	var cor := Color(0.1, 0.3, 0.7)
+	if not bool(previa.get("ok", false)):
+		txt = "Sem cota: nada no raio de %s m" % main.fmt(previa.get("raio", 0.0), 0)
+		cor = Color(0.85, 0.1, 0.1)
+	elif bool(previa.get("sobre_curva", false)):
+		txt = "Z %s m — sobre a curva (sem interpolação)" % main.fmt(previa["z"], 2)
+	elif str(previa.get("metodo", "")) == "ponto":
+		txt = "Z %s m — ponto cotado" % main.fmt(previa["z"], 2)
+	else:
+		txt = "Z %s m — %s (raio %s m)" % [main.fmt(previa["z"], 2), "aproximada" if bool(previa.get("aprox", false)) else "interpolada", main.fmt(previa.get("raio", 0.0), 0)]
+	c.draw_string(_font, cs + Vector2(12, -10), txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, cor)
+
+
+## Marcador do osnap (como nos programas de desenho): forma conforme o alvo + rótulo.
+func _draw_snap(c: Control) -> void:
+	if snap.is_empty():
+		return
+	var p := w2s(snap["w"])
+	var cor := Color(0.0, 0.62, 0.2)
+	var k := 7.0
+	match str(snap["tipo"]):
+		"no":
+			c.draw_rect(Rect2(p - Vector2(k, k), Vector2(k, k) * 2.0), cor, false, 2.0)
+		"pc":
+			c.draw_polyline(PackedVector2Array([p + Vector2(0, -k), p + Vector2(k, 0), p + Vector2(0, k), p + Vector2(-k, 0), p + Vector2(0, -k)]), cor, 2.0)
+			c.draw_line(p - Vector2(3, 3), p + Vector2(3, 3), cor, 1.5)
+			c.draw_line(p + Vector2(-3, 3), p + Vector2(3, -3), cor, 1.5)
+		"vertice":
+			c.draw_polyline(PackedVector2Array([p + Vector2(0, -k), p + Vector2(k, k * 0.8), p + Vector2(-k, k * 0.8), p + Vector2(0, -k)]), cor, 2.0)
+		_:
+			# "mais próximo" sobre a linha (ampulheta)
+			c.draw_polyline(PackedVector2Array([p + Vector2(-k, -k), p + Vector2(k, -k), p + Vector2(-k, k), p + Vector2(k, k), p + Vector2(-k, -k)]), cor, 2.0)
+	var rot := str(snap.get("rotulo", ""))
+	if rot != "":
+		var tam := _font.get_string_size(rot, HORIZONTAL_ALIGNMENT_LEFT, -1, 11)
+		var bp := p + Vector2(10, 10)
+		c.draw_rect(Rect2(bp, tam + Vector2(8, 4)), Color(1, 1, 0.85, 0.95))
+		c.draw_rect(Rect2(bp, tam + Vector2(8, 4)), cor, false, 1.0)
+		c.draw_string(_font, bp + Vector2(4, tam.y - 2), rot, HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.1, 0.25, 0.1))
+
+
+# ------------------------------------------------------------------ osnap / orto
+
+func orto_ligado() -> bool:
+	return bool(main.opts.get("orto", false))
+
+
+func osnap_ligado() -> bool:
+	return bool(main.opts.get("osnap", true))
+
+
+## Alvo do magnetismo mais próximo do cursor, até OSNAP_PX pixels. Prioridade: PV, ponto
+## cotado, vértice de rua; depois o ponto mais próximo sobre curva de nível ou rua.
+## Retorna {} ou {w, tipo ("no" | "pc" | "vertice" | "curva" | "rua"), rotulo, nid, z, dist_px}.
+func buscar_snap(s: Vector2, excluir := -1, nos := true) -> Dictionary:
+	var w := s2w(s)
+	var r := OSNAP_PX / scale_px
+	var cand: Array = []
+	for n in main.proj["nodes"]:
+		if not nos or int(n["id"]) == excluir:
+			continue
+		var d := w2s(Net.pos(n)).distance_to(s)
+		if d <= OSNAP_PX:
+			cand.append({"w": Net.pos(n), "tipo": "no", "prio": 0, "dist_px": d, "nid": int(n["id"]),
+				"rotulo": "%s %s" % [str(n["tipo"]), str(n["nome"])]})
+	var topo = main.topo
+	var opts: Dictionary = main.opts
+	if bool(opts.get("pontos_desenho", true)) and topo.tem_pontos():
+		var pp: Dictionary = topo.ponto_proximo(w, r)
+		if bool(pp["ok"]):
+			cand.append({"w": Vector2(pp["pt"].x, pp["pt"].y), "tipo": "pc", "prio": 1, "dist_px": float(pp["dist"]) * scale_px,
+				"z": float(pp["pt"].z), "rotulo": "Ponto cotado %s m" % main.fmt(pp["pt"].z, 2)})
+	if bool(opts.get("ruas_desenho", true)) and not topo.ruas.is_empty():
+		var rr: Dictionary = topo.rua_proxima(w, r, r)
+		if bool(rr["ok"]):
+			var vert := bool(rr["vertice"])
+			cand.append({"w": rr["ponto"], "tipo": "vertice" if vert else "rua", "prio": 2 if vert else 3,
+				"dist_px": float(rr["dist"]) * scale_px, "rotulo": "Rua (vértice)" if vert else "Rua"})
+	if int(opts.get("topo_desenho", 0)) != 2 and topo.tem_curvas():
+		var cv: Dictionary = topo.curva_proxima(w, r)
+		if bool(cv["ok"]):
+			cand.append({"w": cv["ponto"], "tipo": "curva", "prio": 3, "dist_px": float(cv["dist"]) * scale_px,
+				"z": float(cv["z"]), "rotulo": "Curva %s m" % main.fmt(cv["z"], 2)})
+	if cand.is_empty():
+		return {}
+	cand.sort_custom(func(a, b):
+		if int(a["prio"]) != int(b["prio"]):
+			return int(a["prio"]) < int(b["prio"])
+		return float(a["dist_px"]) < float(b["dist_px"]))
+	return cand[0]
+
+
+## Ponto de referência do ORTO: último nó do traçado ou posição inicial do nó arrastado.
+func _ref_orto():
+	if drag_node >= 0:
+		return drag_origem
+	if tracing and trace_from >= 0:
+		var n = Net.node_map(main.proj).get(trace_from)
+		if n != null:
+			return Net.pos(n)
+	return null
+
+
+## Posição efetiva do cursor: o osnap tem prioridade; sem alvo, o ORTO alinha na horizontal
+## ou na vertical a partir do ponto de referência. Retorna {w, snap, orto}.
+func ponto_cursor(s: Vector2) -> Dictionary:
+	var w := s2w(s)
+	var excl := drag_node if drag_node >= 0 else (trace_from if tracing else -1)
+	if osnap_ligado():
+		# arrastando um PV, ele não gruda em outro PV (ficariam dois nós no mesmo lugar)
+		var sn := buscar_snap(s, excl, drag_node < 0)
+		if not sn.is_empty():
+			return {"w": sn["w"], "snap": sn, "orto": false}
+	var ref = _ref_orto()
+	if orto_ligado() and ref != null:
+		var d: Vector2 = w - ref
+		w = ref + (Vector2(d.x, 0.0) if absf(d.x) >= absf(d.y) else Vector2(0.0, d.y))
+		return {"w": w, "snap": {}, "orto": true}
+	return {"w": w, "snap": {}, "orto": false}
+
+
+## Cota para um nó novo ou movido: ponto cotado capturado pelo osnap vale direto; senão,
+## o cálculo automático (sobre uma curva, a cota da curva; fora dela, interpolação no raio).
+func cota_no(w: Vector2, sn: Dictionary) -> Dictionary:
+	if str(main.opts.get("cota_modo", "int")) != "none" and str(sn.get("tipo", "")) == "pc":
+		return {"ok": true, "z": float(sn["z"]), "metodo": "ponto", "raios": [], "par": []}
+	return main.cota_auto(w)
+
+
+func _atualizar_previa() -> void:
+	previa = {}
+	if not (tracing or drag_node >= 0) or main.topo.vazio():
+		return
+	var modo := str(main.opts.get("cota_modo", "int"))
+	if modo == "none":
+		return
+	# sobre um PV existente o clique liga o trecho a ele: não há PV novo para cotar
+	if tracing and str(snap.get("tipo", "")) == "no":
+		return
+	var cr := cota_no(cursor_w, snap)
+	previa = cr.duplicate()
+	previa["w"] = cursor_w
+	previa["raio"] = float(main.opts.get("raio", 100.0)) if modo == "int" else float(main.opts.get("raio_pontos", 100.0))
+	if str(cr.get("metodo", "")) == "ponto":
+		previa["raio"] = 0.0
+	elif modo in ["cc", "prx"] and bool(cr["ok"]):
+		var pp: Dictionary = main.topo.ponto_proximo(cursor_w, float(previa["raio"]))
+		if bool(pp["ok"]):
+			previa["ponto"] = Vector2(pp["pt"].x, pp["pt"].y)
+			previa["metodo"] = "ponto"
 
 
 # ------------------------------------------------------------------ busca por clique
@@ -484,13 +694,55 @@ func hit_linha(s: Vector2) -> int:
 
 func cancelar() -> void:
 	drag_node = -1
-	tracing = false
-	trace_from = -1
+	if encerrar_tracado():
+		base.queue_redraw()
 	mode = ""
 	win_on = false
+	box_on = false
 	panning = false
 	mouse_default_cursor_shape = Control.CURSOR_CROSS
 	over.queue_redraw()
+
+
+## Encerra o traçado em andamento. Se o coletor foi iniciado mas nenhum trecho chegou a ser
+## criado, o nó inicial é descartado (não deixa resíduo). Retorna true se removeu algo.
+func encerrar_tracado() -> bool:
+	var removeu := false
+	if tracing and trace_from >= 0:
+		removeu = Net.remover_orfaos(main.proj) > 0
+		sel_nos.erase(trace_from)
+	tracing = false
+	trace_from = -1
+	return removeu
+
+
+func limpar_selecao() -> void:
+	marked.clear()
+	sel_nos.clear()
+
+
+func tem_selecao() -> bool:
+	return not marked.is_empty() or not sel_nos.is_empty()
+
+
+## Seleção por caixa (como nas ferramentas de seleção de programas de desenho): entra tudo o
+## que estiver inteiramente dentro do retângulo (coordenadas de tela). Um trecho entra quando
+## os dois nós estão dentro. "somar" mantém a seleção anterior.
+func selecionar_retangulo(a: Vector2, b: Vector2, somar := false) -> void:
+	var r := Rect2(a, b - a).abs()
+	if not somar:
+		limpar_selecao()
+	var nodes := Net.node_map(main.proj)
+	var dentro := {}
+	for nid in nodes.keys():
+		if r.has_point(w2s(Net.pos(nodes[nid]))):
+			dentro[nid] = true
+			sel_nos[nid] = true
+	for t in main.proj["trechos"]:
+		if dentro.has(int(t["ni"])) and dentro.has(int(t["nf"])):
+			marked[int(t["id"])] = true
+	main.on_marcados()
+	redesenhar()
 
 
 func marcar_coletor(tid: int) -> void:
@@ -515,19 +767,27 @@ func marcar_coletor(tid: int) -> void:
 func _gui_input(ev: InputEvent) -> void:
 	if ev is InputEventMouseMotion:
 		mouse_s = ev.position
-		var w := s2w(mouse_s)
 		if panning:
 			center -= Vector2(ev.relative.x, -ev.relative.y) / scale_px
 			base.queue_redraw()
-		elif drag_node >= 0:
+		var cur := ponto_cursor(mouse_s) if not panning and not box_on and not win_on else {"w": s2w(mouse_s), "snap": {}, "orto": false}
+		var w: Vector2 = cur["w"]
+		cursor_w = w
+		snap = cur["snap"]
+		cursor_orto = bool(cur["orto"])
+		if drag_node >= 0 and not panning:
 			var n = Net.node_map(main.proj).get(drag_node)
-			if n != null:
+			if n != null and w.distance_to(drag_origem) * scale_px > 0.5:
 				n["e"] = w.x
 				n["n"] = w.y
+				drag_snap = snap
 				drag_moved = true
 				base.queue_redraw()
+		_atualizar_previa()
 		var z := NAN
-		if not main.topo.vazio():
+		if not previa.is_empty():
+			z = float(previa["z"]) if bool(previa.get("ok", false)) else NAN
+		elif not main.topo.vazio():
 			var cr: Dictionary = main.cota_auto(w, true)
 			if bool(cr["ok"]):
 				z = float(cr["z"])
@@ -563,11 +823,17 @@ func _gui_input(ev: InputEvent) -> void:
 			return
 	if ev is InputEventKey and ev.pressed:
 		if ev.keycode == KEY_ESCAPE:
-			cancelar()
-			main.set_status("Comando cancelado.")
+			if not tracing and mode == "" and not box_on and tem_selecao():
+				limpar_selecao()
+				main.on_marcados()
+				redesenhar()
+				main.set_status("Seleção desfeita.")
+			else:
+				cancelar()
+				main.set_status("Comando cancelado.")
 			accept_event()
 		elif ev.keycode == KEY_DELETE:
-			main.apagar_marcados()
+			main.apagar_selecao()
 			accept_event()
 
 
@@ -588,28 +854,67 @@ func _left_press(s: Vector2, shift: bool, ctrl: bool) -> void:
 		elif tid >= 0:
 			marcar_coletor(tid)
 		return
-	if ctrl:
+	if ctrl and not tracing:
 		if tid < 0 and nid < 0:
 			tid = hit_linha(s)
-		if tid >= 0:
+		if nid >= 0:
+			if sel_nos.has(nid):
+				sel_nos.erase(nid)
+			else:
+				sel_nos[nid] = true
+		elif tid >= 0:
 			if marked.has(tid):
 				marked.erase(tid)
 			else:
 				marked[tid] = true
-			main.on_marcados()
-			redesenhar()
+		else:
+			_iniciar_caixa(s, true)
+			return
+		main.on_marcados()
+		redesenhar()
 		return
 	if tracing:
-		_tracar_ate(s, nid)
+		var cur := ponto_cursor(s)
+		var sn: Dictionary = cur["snap"]
+		_tracar_ate(s, int(sn["nid"]) if str(sn.get("tipo", "")) == "no" else nid, cur)
 		return
 	if nid >= 0:
 		drag_node = nid
 		drag_moved = false
+		drag_snap = {}
+		drag_origem = Net.pos(Net.node_map(main.proj)[nid])
+		return
+	if tid < 0:
+		tid = hit_linha(s)
+	if tid >= 0:
+		limpar_selecao()
+		marked[tid] = true
+		main.on_marcados()
+		redesenhar()
+		return
+	_iniciar_caixa(s, false)
+
+
+func _iniciar_caixa(s: Vector2, somar: bool) -> void:
+	box_on = true
+	box_a = s
+	box_somar = somar
 
 
 func _left_release(s: Vector2) -> void:
 	if panning and mode == "pan":
 		panning = false
+		return
+	if box_on:
+		box_on = false
+		if box_a.distance_to(s) > 4.0:
+			selecionar_retangulo(box_a, s, box_somar)
+			main.set_status("%d nó(s) e %d trecho(s) selecionado(s). Del apaga; Esc desfaz a seleção." % [sel_nos.size(), marked.size()])
+		elif not box_somar and tem_selecao():
+			limpar_selecao()
+			main.on_marcados()
+			redesenhar()
+		over.queue_redraw()
 		return
 	if win_on:
 		win_on = false
@@ -626,7 +931,7 @@ func _left_release(s: Vector2) -> void:
 			var n = Net.node_map(main.proj).get(drag_node)
 			var modo := str(main.opts.get("cota_modo", "int"))
 			if n != null and modo != "none":
-				var cr: Dictionary = main.cota_auto(Net.pos(n))
+				var cr: Dictionary = cota_no(Net.pos(n), drag_snap)
 				if bool(cr["ok"]):
 					n["ct"] = snappedf(float(cr["z"]), 0.001)
 					n["ct_ok"] = true
@@ -636,7 +941,14 @@ func _left_release(s: Vector2) -> void:
 				rastro = cr
 			main.on_changed("mover")
 			main.set_status("Nó %s movido." % str(n["nome"]) if n != null else "")
+		else:
+			limpar_selecao()
+			sel_nos[drag_node] = true
+			main.on_marcados()
+			redesenhar()
 		drag_node = -1
+		previa = {}
+		over.queue_redraw()
 
 
 func _right_press(s: Vector2, ctrl: bool) -> void:
@@ -646,10 +958,12 @@ func _right_press(s: Vector2, ctrl: bool) -> void:
 		main.set_status("Nó %s — coletor(es): %s" % [str(Net.node_map(main.proj)[nid]["nome"]), ", ".join(PackedStringArray(cols))])
 		return
 	if tracing:
-		tracing = false
-		trace_from = -1
+		if encerrar_tracado():
+			base.queue_redraw()
+			main.set_status("Traçado cancelado: nenhum trecho foi criado, o nó inicial foi descartado.")
+		else:
+			main.set_status("Traçado finalizado. Botão 2 numa área vazia inicia um novo coletor.")
 		over.queue_redraw()
-		main.set_status("Traçado finalizado. Botão 2 numa área vazia inicia um novo coletor.")
 		return
 	if mode != "":
 		cancelar()
@@ -661,9 +975,10 @@ func _right_press(s: Vector2, ctrl: bool) -> void:
 	if tid >= 0:
 		main.abrir_trecho(tid)
 		return
-	# inicia um novo coletor (ponta seca)
-	var w := s2w(s)
-	var cr: Dictionary = main.cota_auto(w)
+	# inicia um novo coletor (ponta seca), no ponto capturado pelo osnap se houver
+	var cur := ponto_cursor(s)
+	var w: Vector2 = cur["w"]
+	var cr: Dictionary = cota_no(w, cur["snap"])
 	rastro = cr
 	var pos_w: Vector2 = cr.get("w", w)
 	var ct: float = float(cr["z"]) if bool(cr["ok"]) else 0.0
@@ -671,7 +986,9 @@ func _right_press(s: Vector2, ctrl: bool) -> void:
 	tracing = true
 	trace_from = int(n["id"])
 	trace_col = Net.coletor_novo(main.proj)
-	main.on_changed("traçado")
+	# o nó inicial só entra no histórico junto com o primeiro trecho; se o traçado for
+	# encerrado sem trechos, ele é descartado (encerrar_tracado)
+	redesenhar()
 	main.set_status("Coletor %s iniciado no nó %s. Botão 1 cria os próximos nós; botão 2 finaliza." % [trace_col, str(n["nome"])])
 
 
@@ -688,12 +1005,19 @@ func _continuar_de(nid: int) -> void:
 	over.queue_redraw()
 
 
-func _tracar_ate(s: Vector2, nid: int) -> void:
+func _tracar_ate(s: Vector2, nid: int, cur := {}) -> void:
 	if nid == trace_from:
 		return
+	if not Net.node_map(main.proj).has(trace_from):
+		cancelar()
+		return
 	if nid >= 0:
-		if Net.alcanca(main.proj, nid, trace_from):
-			main.set_status("Ligação recusada: formaria um laço (o nó %s está a jusante)." % str(Net.node_map(main.proj)[nid]["nome"]))
+		var regra := Net.pode_ligar(main.proj, trace_from, nid)
+		if not bool(regra["ok"]):
+			if str(regra["regra"]) in ["sem_saida", "max_entradas"]:
+				main.alertar("Ligação não permitida", str(regra["motivo"]))
+			else:
+				main.set_status(str(regra["motivo"]))
 			return
 		var t := Net.novo_trecho(main.proj, main.db, trace_from, nid, trace_col)
 		tracing = false
@@ -701,8 +1025,10 @@ func _tracar_ate(s: Vector2, nid: int) -> void:
 		main.on_changed("traçado")
 		main.set_status("Trecho %s ligado ao nó existente (afluente). Traçado finalizado." % str(t["nome"]))
 		return
-	var w := s2w(s)
-	var cr: Dictionary = main.cota_auto(w)
+	if cur.is_empty():
+		cur = ponto_cursor(s)
+	var w: Vector2 = cur["w"]
+	var cr: Dictionary = cota_no(w, cur["snap"])
 	rastro = cr
 	var pos_w: Vector2 = cr.get("w", w)
 	var ct: float = float(cr["z"]) if bool(cr["ok"]) else float(Net.node_map(main.proj)[trace_from]["ct"])

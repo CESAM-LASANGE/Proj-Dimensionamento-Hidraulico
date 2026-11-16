@@ -2,7 +2,7 @@
 
 **Projeto e dimensionamento de redes coletoras de esgoto sanitário** — traçado gráfico sobre topografia, cálculo hidráulico pelos critérios da NBR 9649, planilhas, orçamento, perfis e exportação para CAD.
 
-> ⚠️ **Versão alpha (0.1.0-alpha).** Feita para avaliação. Os resultados devem ser conferidos por um responsável técnico e validados contra a norma vigente e as exigências da concessionária antes de qualquer uso em projeto real.
+> ⚠️ **Versão alpha (0.2.0-alpha).** Feita para avaliação. Os resultados devem ser conferidos por um responsável técnico e validados contra a norma vigente e as exigências da concessionária antes de qualquer uso em projeto real.
 
 ![Planta com a rede de exemplo dimensionada](docs/planta.png)
 
@@ -12,8 +12,8 @@ Baixe a última versão na página de [**Releases**](../../releases):
 
 | Sistema | Arquivo | Como abrir |
 |---|---|---|
-| Windows 10/11 (64 bits) | `DimEsgoto-0.1.0-alpha-windows-x86_64.zip` | Extraia e abra `DimEsgoto.exe` |
-| Linux (64 bits) | `DimEsgoto-0.1.0-alpha-linux-x86_64.zip` | Extraia e execute `./DimEsgoto.x86_64` |
+| Windows 10/11 (64 bits) | `DimEsgoto-0.2.0-alpha-windows-x86_64.zip` | Extraia e abra `DimEsgoto.exe` |
+| Linux (64 bits) | `DimEsgoto-0.2.0-alpha-linux-x86_64.zip` | Extraia e execute `./DimEsgoto.x86_64` |
 
 Não precisa instalar nada. No Windows, como o executável ainda não é assinado, o SmartScreen pode avisar "editor desconhecido": clique em **Mais informações › Executar assim mesmo**.
 
@@ -23,6 +23,9 @@ Ao abrir, uma rede de exemplo já vem carregada e dimensionada. Aperte **F1** pa
 
 **Traçado da rede**
 - Área de trabalho estilo CAD. Botão direito inicia e termina um coletor, botão esquerdo cria os PVs, Shift continua o traçado e Ctrl marca trechos.
+- Seleção por caixa (arrastar na área vazia) e exclusão com confirmação. As regras da rede são aplicadas na edição: um afluente só se liga a um PV com saída, cada PV aceita no máximo 3 entradas e nenhum trecho fica sem saída.
+- Importação da rede a partir de DXF (linhas e polilinhas).
+- Osnap (F10) com magnetismo em PVs, pontos cotados, ruas e curvas; orto (F9); raio de busca da interpolação visível no cursor durante o traçado.
 - Topografia em DXF (curvas de nível, ruas e pontos cotados, ASCII ou binário), com cota automática dos nós.
 - Imagem de fundo, grade de coordenadas N/E, zoom, pan e janela.
 - Desfazer e refazer (Ctrl+Z / Ctrl+Y).
@@ -37,7 +40,7 @@ Ao abrir, uma rede de exemplo já vem carregada e dimensionada. Aperte **F1** pa
 ![Planilha de resultados](docs/resultados.png)
 
 **Entregáveis**
-- Planilhas de trechos, nós, dimensionamento, quantitativos, resultados, orçamento e observações, exportáveis em CSV, XLSX, HTML e PDF.
+- Planilhas de trechos, nós, dimensionamento, quantitativos, resultados, orçamento e observações, exportáveis em CSV, XLSX, HTML e PDF (a aba atual ou todas numa pasta XLSX), com as colunas de identificação fixas ao rolar.
 - Memorial de cálculo (TXT/PDF) com identificador de rastreabilidade do resultado.
 - Planta e perfil longitudinal em DXF; perfil também em PNG.
 - Banco editável de materiais, tubos, PVs, pavimentos, escoramentos, reduções e acessórios.
@@ -48,7 +51,7 @@ Ao abrir, uma rede de exemplo já vem carregada e dimensionada. Aperte **F1** pa
 - Ligações domiciliares em CSV, com relatório de importação (duplicadas, fora da área, sem consumo…).
 - Bacias e sub-bacias em GeoJSON, com balanço de contribuições.
 - Interferências em GeoJSON.
-- Exportação e reimportação da rede em GeoJSON.
+- Exportação e reimportação da rede em GeoJSON e exportação em GeoPackage (.gpkg).
 
 ## Rodar a partir do código-fonte
 
@@ -64,7 +67,7 @@ godot -e --path app
 
 ## Testes
 
-Os casos de avaliação estão em [EVALS.md](EVALS.md) e [tests/PHASE-2-5.md](tests/PHASE-2-5.md). O runner executa as fases em ordem e para na primeira que falhar:
+Os casos de avaliação estão em [EVALS.md](EVALS.md), [tests/PHASE-2-5.md](tests/PHASE-2-5.md), [tests/PHASE-6.md](tests/PHASE-6.md) e [tests/PHASE-7.md](tests/PHASE-7.md). O runner executa as fases em ordem e para na primeira que falhar:
 
 ```bash
 python3 tests/run_tests.py                 # todas as fases (abre uma janela por alguns segundos nos testes visuais)
@@ -93,6 +96,7 @@ app/        projeto Godot (GDScript)
   topo.gd, dxf.gd topografia e DXF
   cadastro.gd     ligações, bacias e balanço
   geo.gd          GeoJSON
+  gpkg.gd         GeoPackage (SQLite escrito sem bibliotecas)
   report.gd       memorial, CSV/XLSX/HTML/PDF, DXF
   db.gd           banco de itens de custo
   registro.gd     registro de erros

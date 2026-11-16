@@ -42,7 +42,13 @@ FASES = {
         ["T4-01", "T4-02", "T4-03", "T4-04", "T4-05", "T4-06", "T4-07"]),
     5: ("Fase 5 — robustez e manutenção", ["test_robustez.gd"], ["test_grafico.gd"],
         ["T5-01", "T5-02", "T5-03", "T5-04", "T5-05", "T5-06", "T5-07", "T5-08", "T5-09"]),
+    6: ("Fase 6 — edição da rede, planilhas e intercâmbio", ["test_edicao.gd"], ["test_grafico.gd"],
+        ["T6-01", "T6-02", "T6-03", "T6-04", "T6-05", "T6-06", "T6-07", "T6-08", "T6-09", "T6-10"]),
+    7: ("Fase 7 — traçado assistido e alertas de cálculo", ["test_tracado.gd"], ["test_grafico.gd"],
+        ["T7-01", "T7-02", "T7-03", "T7-04", "T7-05"]),
 }
+# ID de regressão de cada fase: calculado pelo runner (nenhum FAIL nas fases anteriores nesta rodada)
+REGRESSAO = {5: "T5-09", 6: "T6-10", 7: "T7-05"}
 ERROS_FATAIS = re.compile(r"SCRIPT ERROR|Parse Error|Program crashed|Segmentation fault|handle_crash", re.I)
 
 
@@ -188,7 +194,7 @@ def main():
                 continue
             if grafico and not tem_display:
                 for i in ids:
-                    if i in ("T3-05", "T4-05", "T5-07"):
+                    if i in ("T3-05", "T4-05", "T5-07", "T6-08", "T7-01", "T7-02"):
                         resultados[i] = juntar(resultados.get(i), {"estado": "SKIP",
                             "mensagem": "parte gráfica (%s) não executada: sem display" % sc, "dados": {}})
                 continue
@@ -209,14 +215,15 @@ def main():
                         "mensagem": "FALHA: erro de script durante o teste: " + fatais[0][:160], "dados": {}})
             if not res:
                 print("  ! %s não produziu resultados (código %d)\n%s" % (sc, rc, out[-2000:]))
-        # T5-09: regressão completa = nenhuma fase anterior com FAIL nesta execução
-        if fase == 5 and "T5-09" in ids:
-            anteriores = [i for f in range(0, 5) for i in FASES[f][3]]
+        # T5-09 / T6-10: regressão completa = nenhuma fase anterior com FAIL nesta execução
+        rid = REGRESSAO.get(fase)
+        if rid in ids:
+            anteriores = [i for f in range(0, fase) for i in FASES[f][3]]
             falhas = [i for i in anteriores if resultados.get(i, {}).get("estado") == "FAIL"]
             nao_exec = [i for i in anteriores if i not in resultados]
             ok = not falhas and not nao_exec
-            resultados["T5-09"] = {"estado": "PASS" if ok else "FAIL", "dados": {},
-                "mensagem": "fases 0–4 executadas nesta rodada sem FAIL" if ok else
+            resultados[rid] = {"estado": "PASS" if ok else "FAIL", "dados": {},
+                "mensagem": "fases 0–%d executadas nesta rodada sem FAIL" % (fase - 1) if ok else
                 "FALHA: " + ("com FAIL: %s" % ", ".join(falhas) if falhas else "") + (" não executados: %s" % ", ".join(nao_exec) if nao_exec else "")}
         for i in ids:
             if i not in resultados:

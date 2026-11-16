@@ -120,7 +120,12 @@ func _t503() -> void:
 	T.usar_banco_teste(m)
 	var p = m.plan
 	p.ajustar(Rect2(-50, -150, 400, 300), false)
-	_op("traçado", func(): p._right_press(p.w2s(Vector2(300, 100)), false))
+	# traçado = iniciar o coletor, criar um trecho e encerrar (iniciar sem trecho não altera o
+	# projeto: o nó inicial é descartado — T6-05)
+	_op("traçado", func():
+		p._right_press(p.w2s(Vector2(300, 100)), false)
+		p._left_press(p.w2s(Vector2(300, 40)), false, false)
+		p.cancelar())
 	p.cancelar()
 	_op("mover nó", func():
 		var n := Net.achar_no(m.proj, "D")

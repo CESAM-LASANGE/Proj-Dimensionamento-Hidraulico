@@ -677,11 +677,16 @@ func abrir_dimensionamento() -> void:
 			return
 		aplica.call()
 		var res: Dictionary = main.executar_calculo()
+		var alertas: Array = res.get("alertas", [])
+		if not alertas.is_empty():
+			main.alertar("Alertas da rede", main.texto_alertas(alertas))
 		estado["luz"] = res.get("luz", "vermelha")
 		luzes.queue_redraw()
 		arq.text = "Arquivo de Resultados: %s" % main.ultimo_res
 		var n_obs: int = res.get("obs", []).size()
-		if str(estado["luz"]) == "verde":
+		if str(estado["luz"]) == "verde" and not alertas.is_empty():
+			ajuda.text = "Dimensionamento concluído sem restrições hidráulicas, com %d alerta(s) da rede (Planilha de Observações)." % alertas.size()
+		elif str(estado["luz"]) == "verde":
 			ajuda.text = "Dimensionamento concluído sem problemas."
 		elif str(estado["luz"]) == "amarela":
 			ajuda.text = "Dimensionamento concluído com %d observação(ões). Veja a Planilha de Observações (botão OBS)." % n_obs
@@ -886,7 +891,7 @@ func abrir_cotas() -> void:
 	var g := _grid()
 	gp[1].add_child(g)
 	var raio := _num(o.get("raio", 100.0), 2)
-	_linha(g, "Raio de Busca (m):", raio, "Área de influência considerada no cálculo da cota.")
+	_linha(g, "Raio de Busca (m):", raio, "Área de influência considerada no cálculo da cota. Durante o traçado, aparece como um círculo em volta do cursor. Sobre uma curva de nível, a cota é a da curva (sem interpolação).")
 	var prec := HSlider.new()
 	prec.min_value = 1
 	prec.max_value = 10
@@ -1388,29 +1393,36 @@ const AJUDA := """[b]DimEsgoto — comandos do traçado[/b]
 
 [table=4]
 [cell][b]Comando[/b][/cell][cell][b]Na área vazia[/b][/cell][cell][b]Sobre o nó[/b][/cell][cell][b]Sobre o trecho (caixa da seta)[/b][/cell]
-[cell]Botão 1[/cell][cell]Cria nós intermediários (durante o traçado)[/cell][cell]Clicar e arrastar: move o nó[/cell][cell]—[/cell]
+[cell]Botão 1[/cell][cell]Cria nós intermediários (durante o traçado); arrastar: caixa de seleção[/cell][cell]Clique: seleciona; arrastar: move o nó[/cell][cell]Seleciona o trecho[/cell]
 [cell]Botão 2[/cell][cell]Inicia o traçado / finaliza o traçado[/cell][cell]Propriedades do nó[/cell][cell]Propriedades do trecho[/cell]
 [cell]Shift + botão 1[/cell][cell]—[/cell][cell]Continua o traçado a partir deste nó (só do último nó de um coletor)[/cell][cell]Marca o coletor inteiro[/cell]
-[cell]Ctrl + botão 1[/cell][cell]—[/cell][cell]—[/cell][cell]Marca / desmarca o trecho[/cell]
+[cell]Ctrl + botão 1[/cell][cell]Arrastar: soma uma caixa à seleção[/cell][cell]Soma / tira o nó da seleção[/cell][cell]Soma / tira o trecho da seleção[/cell]
 [cell]Ctrl + botão 2[/cell][cell]—[/cell][cell]Mostra o nome do coletor[/cell][cell]—[/cell]
 [/table]
 
 • O traçado de cada coletor é feito sempre de [b]montante para jusante[/b]. Para criar um afluente, termine o traçado clicando (botão 1) sobre um nó existente.
-• Roda do mouse: zoom no cursor. Botão do meio: desloca a vista. Esc: cancela o comando. Del: apaga os trechos marcados.
-• Um nó não é apagado diretamente: apague os trechos ligados a ele. Para inserir um nó no meio de um trecho, use Trechos › Divide trecho.
+• Regras da rede: o afluente só pode ser ligado a um PV que já tenha saída (trecho de jusante), e cada PV recebe no máximo 3 trechos. Ligações fora dessas regras são recusadas com um aviso.
+• Caixa de seleção: arraste o botão 1 numa área vazia; entra tudo o que estiver inteiramente dentro da caixa (nós e trechos com os dois nós dentro). Ctrl soma à seleção. Esc desfaz a seleção.
+• Del apaga a seleção, sempre com confirmação. Apagar um ponto intermediário une os dois trechos; nós que ficam sem trechos saem junto, sem deixar resíduos. Não é possível apagar o trecho de jusante de um PV que recebe dois ou mais trechos, nem um PV com duas ou mais chegadas, porque esses trechos ficariam sem saída.
+• Roda do mouse: zoom no cursor. Botão do meio: desloca a vista. Esc: cancela o comando. Para inserir um nó no meio de um trecho, use Trechos › Divide trecho.
+• OSNAP (F10, botão na barra inferior): magnetismo. Perto de um PV, ponto cotado, vértice de rua, curva de nível ou rua, o cursor gruda no elemento, que aparece marcado em verde com o nome. Um PV colocado sobre um ponto cotado recebe a cota dele; sobre uma curva, a cota da curva, sem interpolação.
+• ORTO (F9): o trecho em traçado e o nó arrastado ficam só na horizontal ou na vertical. O osnap tem prioridade sobre o orto.
+• Durante o traçado, o círculo azul em volta do cursor é o raio de busca da interpolação (Opções › Cálculo automático de cotas). As retas cinzas e a reta magenta mostram as curvas usadas, e o texto mostra a cota que o próximo PV vai receber.
+• Ao dimensionar, um alerta avisa se há trechos isolados, que não deságuam na rede principal, e trechos com terreno sem caimento. O cálculo é feito assim mesmo, e os alertas ficam na Planilha de Observações.
+• Arquivos › Importa rede de DXF… lê linhas e polilinhas dos layers escolhidos como coletores (desenhados de montante para jusante). Arquivos › Cadastro e SIG › Exporta rede (GeoPackage)… gera um .gpkg com as camadas de PVs e trechos.
 • Cotas do terreno: com base topográfica carregada (Arquivos › Lê DXF…), o modo do traçado (C+C, PRX, INT na barra inferior) calcula a cota de cada nó criado. Nós sem cota confirmada ficam com um X vermelho.
 
 [b]Teclas de atalho[/b]
 Ctrl+N novo • F2 salva • Ctrl+T traçado • Ctrl+E planilhas • Ctrl+D dimensionamento • F5 localizar • F3 localizar próxima
 Ctrl+Z desfazer • Ctrl+Y ou Ctrl+Shift+Z refazer
 Ctrl+I / Ctrl+O zoom • Ctrl+0 sem zoom • Ctrl+U último zoom • Ctrl+J janela • Ctrl+P pan • Ctrl+A ajuste máximo • Ctrl+R redesenha
-Ctrl+L traçado da rede • Ctrl+X exibição de DXF's • Ctrl+S cálculo automático de cotas • F6 / F7 / F8 modos de cota
+Ctrl+L traçado da rede • Ctrl+X exibição de DXF's • Ctrl+S cálculo automático de cotas • F6 / F7 / F8 modos de cota • F9 orto • F10 osnap
 
 [b]Registro de erros[/b]
 Ajuda › Registro de erros… (ou o aviso vermelho na barra de status) mostra cada erro com o local no código, o rastreio e as últimas ações feitas antes dele. Os arquivos ficam na pasta de dados do usuário (Linux: ~/.local/share/godot/app_userdata/DimEsgoto/logs) e ocupam no máximo cerca de 10 MB: o registro é rotacionado, erros repetidos são contados em vez de gravados de novo e os arquivos mais antigos são apagados automaticamente.
 
 [b]Planilhas[/b]
-Colunas brancas são editáveis; amarelas, só leitura. Clique numa célula já selecionada para editar. Botão 2 nas colunas de lista (tipo do nó, material, superfície, escoramento, situação, critério) abre as opções do banco de dados e aplica a todas as células selecionadas da coluna. Ctrl+C / Ctrl+V copiam e colam blocos de células (também com Excel/LibreOffice).
+Colunas brancas são editáveis; amarelas, só leitura. Clique numa célula já selecionada para editar. Botão 2 nas colunas de lista (tipo do nó, material, superfície, escoramento, situação, critério) abre as opções do banco de dados e aplica a todas as células selecionadas da coluna. Ctrl+C / Ctrl+V copiam e colam blocos de células (também com Excel/LibreOffice). As primeiras colunas (coletor, trecho, PV e extensão) ficam fixas ao rolar para a direita. A barra acima das planilhas exporta a aba atual em CSV, XLSX, HTML ou PDF, ou todas as planilhas numa pasta de trabalho XLSX.
 """
 
 const COMO_USAR := """[b]Meu primeiro projeto (resumo do capítulo 7 do manual)[/b]

@@ -188,9 +188,13 @@ static func numero_br(t: String) -> Variant:
 	return null
 
 
-static func _sheet_xml(dados: Array) -> String:
+static func _sheet_xml(dados: Array, fixas := 0) -> String:
 	var s := "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
-	s += "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>"
+	s += "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">"
+	if fixas > 0:
+		# primeiras colunas e linha de títulos congeladas (como na planilha do programa)
+		s += "<sheetViews><sheetView workbookViewId=\"0\"><pane xSplit=\"%d\" ySplit=\"1\" topLeftCell=\"%s2\" activePane=\"bottomRight\" state=\"frozen\"/></sheetView></sheetViews>" % [fixas, _col(fixas)]
+	s += "<sheetData>"
 	for k in dados.size():
 		s += "<row r=\"%d\">" % (k + 1)
 		for c in dados[k].size():
@@ -206,20 +210,54 @@ static func _sheet_xml(dados: Array) -> String:
 	return s
 
 
+## Nome de aba válido no Excel: até 31 caracteres, sem : \\ / ? * [ ] e sem repetir.
+static func nome_aba(nome: String, usados: Dictionary) -> String:
+	var n := nome
+	for ch in [":", "\\", "/", "?", "*", "[", "]"]:
+		n = n.replace(ch, "-")
+	n = n.strip_edges().left(31)
+	if n == "":
+		n = "Planilha"
+	var base := n
+	var k := 2
+	while usados.has(n.to_lower()):
+		var suf := " (%d)" % k
+		n = base.left(31 - suf.length()) + suf
+		k += 1
+	usados[n.to_lower()] = true
+	return n
+
+
 ## Pasta de trabalho XLSX mínima: aba "Dados" (números como números) e aba "Info".
-static func gravar_xlsx(path: String, titulo: String, dados: Array, info: Dictionary) -> bool:
-	var info_rows: Array = [["Campo", "Valor"], ["Planilha", titulo]]
+static func gravar_xlsx(path: String, titulo: String, dados: Array, info: Dictionary, fixas := 0) -> bool:
+	var info_ex := {"Planilha": titulo}
+	info_ex.merge(info)
+	return gravar_xlsx_abas(path, [{"nome": "Dados", "dados": dados, "fixas": fixas}], info_ex)
+
+
+## Pasta de trabalho com várias abas ([{nome, dados, fixas}]) e, no fim, a aba "Info".
+static func gravar_xlsx_abas(path: String, abas: Array, info: Dictionary) -> bool:
+	var info_rows: Array = [["Campo", "Valor"]]
 	for k in info.keys():
 		info_rows.append([str(k), str(info[k])])
 	info_rows.append(["Números", "células numéricas (sem separador de milhar); no CSV o separador decimal é vírgula"])
-	var arquivos := {
-		"[Content_Types].xml": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/><Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>",
-		"_rels/.rels": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>",
-		"xl/workbook.xml": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Dados\" sheetId=\"1\" r:id=\"rId1\"/><sheet name=\"Info\" sheetId=\"2\" r:id=\"rId2\"/></sheets></workbook>",
-		"xl/_rels/workbook.xml.rels": "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/></Relationships>",
-		"xl/worksheets/sheet1.xml": _sheet_xml(dados),
-		"xl/worksheets/sheet2.xml": _sheet_xml(info_rows),
-	}
+	var todas: Array = abas.duplicate()
+	todas.append({"nome": "Info", "dados": info_rows, "fixas": 0})
+	var usados := {}
+	var tipos := ""
+	var folhas := ""
+	var rels := ""
+	var arquivos := {}
+	for i in todas.size():
+		var n := i + 1
+		tipos += "<Override PartName=\"/xl/worksheets/sheet%d.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" % n
+		folhas += "<sheet name=\"%s\" sheetId=\"%d\" r:id=\"rId%d\"/>" % [nome_aba(str(todas[i]["nome"]), usados).xml_escape(), n, n]
+		rels += "<Relationship Id=\"rId%d\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet%d.xml\"/>" % [n, n]
+		arquivos["xl/worksheets/sheet%d.xml" % n] = _sheet_xml(todas[i]["dados"], int(todas[i].get("fixas", 0)))
+	arquivos["[Content_Types].xml"] = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" + tipos + "</Types>"
+	arquivos["_rels/.rels"] = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>"
+	arquivos["xl/workbook.xml"] = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets>" + folhas + "</sheets></workbook>"
+	arquivos["xl/_rels/workbook.xml.rels"] = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" + rels + "</Relationships>"
 	var tmp := path + ".tmp~"
 	var z := ZIPPacker.new()
 	if z.open(tmp) != OK:

@@ -153,13 +153,72 @@ func extents() -> Rect2:
 	return r
 
 
+## Distância abaixo da qual o ponto está "sobre a curva": a cota é a da própria curva, sem interpolar.
+const TOL_CURVA := 0.05
+
+
+## Ponto mais próximo sobre as curvas de nível, até "raio" metros.
+## Retorna {ok, z, dist, ponto, curva (índice)}.
+func curva_proxima(p: Vector2, raio: float) -> Dictionary:
+	var res := {"ok": false, "z": NAN, "dist": INF, "ponto": p, "curva": -1}
+	if curvas.is_empty():
+		return res
+	var x0 := floori((p.x - raio) / CELULA)
+	var x1 := floori((p.x + raio) / CELULA)
+	var y0 := floori((p.y - raio) / CELULA)
+	var y1 := floori((p.y + raio) / CELULA)
+	var vistos := {}
+	for cx in range(x0, x1 + 1):
+		for cy in range(y0, y1 + 1):
+			for sg in _grid.get(Vector2i(cx, cy), []):
+				if vistos.has(sg):
+					continue
+				vistos[sg] = true
+				var pts: PackedVector2Array = curvas[sg.x]["pts"]
+				var q := Geometry2D.get_closest_point_to_segment(p, pts[sg.y], pts[sg.y + 1])
+				var d := p.distance_to(q)
+				if d <= raio and d < float(res["dist"]):
+					res = {"ok": true, "z": float(curvas[sg.x]["z"]), "dist": d, "ponto": q, "curva": sg.x}
+	return res
+
+
+## Ponto mais próximo sobre as linhas de ruas (e vértice, se houver um a até "raio_vertice").
+## Retorna {ok, dist, ponto, vertice: bool}.
+func rua_proxima(p: Vector2, raio: float, raio_vertice := 0.0) -> Dictionary:
+	var res := {"ok": false, "dist": INF, "ponto": p, "vertice": false}
+	var area := Rect2(p - Vector2(raio, raio), Vector2(raio, raio) * 2.0)
+	for rua in ruas:
+		var pts: PackedVector2Array = rua
+		for k in pts.size():
+			if raio_vertice > 0.0:
+				var dv := p.distance_to(pts[k])
+				if dv <= raio_vertice and (not bool(res["vertice"]) or dv < float(res["dist"])):
+					res = {"ok": true, "dist": dv, "ponto": pts[k], "vertice": true}
+			if k == pts.size() - 1 or bool(res["vertice"]):
+				continue
+			if not area.intersects(Rect2(pts[k], Vector2.ZERO).expand(pts[k + 1]).grow(0.001)):
+				continue
+			var q := Geometry2D.get_closest_point_to_segment(p, pts[k], pts[k + 1])
+			var d := p.distance_to(q)
+			if d <= raio and d < float(res["dist"]):
+				res = {"ok": true, "dist": d, "ponto": q, "vertice": false}
+	return res
+
+
 ## Interpolação nas curvas de nível pela linha de maior declive:
 ## lança "nraios" semirretas; para cada par de direções opostas que encontra
 ## curvas de cotas diferentes, interpola linearmente; usa o par mais curto
 ## (maior declividade). Retorna também o rastro para desenho.
 func cota_curvas(p: Vector2, raio: float, nraios: int) -> Dictionary:
-	var res := {"ok": false, "z": NAN, "raios": [], "par": []}
+	var res := {"ok": false, "z": NAN, "raios": [], "par": [], "sobre_curva": false}
 	if curvas.is_empty():
+		return res
+	# sobre uma curva: a cota é a da curva, não precisa interpolar
+	var sobre := curva_proxima(p, TOL_CURVA)
+	if bool(sobre["ok"]):
+		res["ok"] = true
+		res["z"] = float(sobre["z"])
+		res["sobre_curva"] = true
 		return res
 	var segs := {}
 	var x0 := floori((p.x - raio) / CELULA)

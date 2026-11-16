@@ -15,9 +15,10 @@ const Dialogs = preload("res://dialogs.gd")
 const Registro = preload("res://registro.gd")
 const Cadastro = preload("res://cadastro.gd")
 const Geo = preload("res://geo.gd")
+const Gpkg = preload("res://gpkg.gd")
 
 const APP_NAME := "DimEsgoto"
-const VERSAO := "0.1.0-alpha"
+const VERSAO := "0.2.0-alpha"
 const CFG := "user://dimesgoto.cfg"
 const DB_PADRAO := "user://cesgcust.json"
 
@@ -103,6 +104,8 @@ const SH_OBS := [
 	{"t": "Trecho", "k": "trecho", "w": 90, "f": "s"},
 	{"t": "Observações", "k": "obs", "w": 760, "f": "s"},
 ]
+## Colunas que ficam fixas à esquerda ao rolar a planilha para a direita.
+const COLUNAS_FIXAS := {"res": 4, "trechos": 5, "dimens": 5, "quant": 5, "nos": 2}
 const SHEETS := [["trechos", "Plan. Trechos"], ["nos", "Plan. Nós"], ["dimens", "Plan. Dimens."], ["quant", "Plan. Quant."],
 	["res", "Resultados"], ["orc", "Orçamento"], ["obs", "Observações"]]
 
@@ -137,6 +140,10 @@ var file_cb: Callable
 var file_ext := ""
 var confirm_dialog: ConfirmationDialog
 var confirm_action := ""
+var apagar_dialog: ConfirmationDialog
+var apagar_pendente := {}
+var ultimo_alerta := ""
+var sheets_box: VBoxContainer
 var busca := ""
 var _mono: SystemFont
 var undo_stack: Array = []
@@ -328,8 +335,17 @@ func on_changed(kind: String) -> void:
 func on_marcados() -> void:
 	_atualizar_menus()
 	var n: int = plan.marked.size()
-	if n > 0:
-		set_status("%d trecho(s) marcado(s). Use Trechos › Apaga / Divide / Desloca / Perfil." % n)
+	var nn: int = plan.sel_nos.size()
+	if n > 0 or nn > 0:
+		set_status("%d trecho(s) e %d nó(s) selecionado(s). Del apaga; Trechos › Divide / Desloca / Perfil usam os trechos." % [n, nn])
+
+
+## Alerta ao usuário (janela) para regras da rede que impedem a ação.
+func alertar(titulo: String, texto: String) -> void:
+	ultimo_alerta = texto
+	registro.acao("Alerta: " + texto.get_slice("\n", 0))
+	set_status(texto.get_slice("\n", 0))
+	dlg.mensagem(titulo, texto)
 
 
 func _atualizar_stale() -> void:
@@ -346,10 +362,10 @@ func _atualizar_stale() -> void:
 
 const ROTULOS_ACAO := {
 	"traçado": "traçado", "mover": "mover nó", "no": "edição do nó", "trecho": "edição do trecho",
-	"planilha": "edição na planilha", "apagar": "apagar trechos", "dividir": "dividir trecho",
+	"planilha": "edição na planilha", "apagar": "apagar seleção", "dividir": "dividir trecho",
 	"deslocar": "deslocar trecho", "cotas": "recalcular cotas", "topo": "base topográfica",
 	"dimensionamento": "dimensionamento", "dados": "dados do projeto", "banco": "banco de dados",
-	"cadastro": "cadastro / SIG",
+	"cadastro": "cadastro / SIG", "dxf_rede": "importação de rede (DXF)",
 }
 const MAX_DESFAZER := 100
 
@@ -442,7 +458,7 @@ func _restaurar(f: Dictionary) -> void:
 	resultados_atuais = bool(f["ra"])
 	_estado = f
 	_estado.erase("acao")
-	plan.marked.clear()
+	plan.limpar_selecao()
 	plan.rastro = {}
 	plan.set_imagem(str(proj.get("imagem", "")))
 	dirty = true
@@ -465,6 +481,7 @@ func _shortcut_input(ev: InputEvent) -> void:
 
 func _default_opts() -> Dictionary:
 	return {
+		"orto": false, "osnap": true,
 		"mostra_grid": true, "mostra_imagem": true, "rotulo_no": true, "rotulo_trecho": true, "rotulo_resultado": true, "espessura": 2,
 		"topo_desenho": 0, "topo_texto": false, "topo_legenda": true, "topo_leg_int": 5.0,
 		"cor_principal": "ee7340", "cor_secundaria": "f5cf4c", "ruas_desenho": true, "cor_ruas": "339eb8",
@@ -539,11 +556,16 @@ func _build_ui() -> void:
 	plan.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	plan.cursor_moved.connect(_on_cursor)
 	stack.add_child(plan)
+	sheets_box = VBoxContainer.new()
+	sheets_box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	sheets_box.add_theme_constant_override("separation", 0)
+	sheets_box.visible = false
+	stack.add_child(sheets_box)
+	sheets_box.add_child(_build_barra_planilhas())
 	sheets = TabContainer.new()
-	sheets.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	sheets.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sheets.tabs_position = TabContainer.POSITION_BOTTOM
-	sheets.visible = false
-	stack.add_child(sheets)
+	sheets_box.add_child(sheets)
 	var specs := {"trechos": SH_TRECHOS, "nos": SH_NOS, "dimens": SH_DIMENS, "quant": SH_QUANT, "res": SH_RES, "orc": SH_ORC, "obs": SH_OBS}
 	for sh in SHEETS:
 		var gt := GridTable.new()
@@ -551,6 +573,7 @@ func _build_ui() -> void:
 		gt.setup(specs[sh[0]])
 		gt.choices_fn = Callable(self, "_choices")
 		var key: String = sh[0]
+		gt.set_congeladas(int(COLUNAS_FIXAS.get(key, 0)))
 		gt.cells_changed.connect(func(ch): _on_sheet_cells(key, ch))
 		if key in ["res", "obs"]:
 			gt.tint_readonly = false
@@ -576,6 +599,19 @@ func _build_ui() -> void:
 	confirm_dialog.confirmed.connect(func(): _do_action(confirm_action))
 	add_child(confirm_dialog)
 
+	apagar_dialog = ConfirmationDialog.new()
+	apagar_dialog.title = "Apagar"
+	apagar_dialog.ok_button_text = "Apagar"
+	apagar_dialog.cancel_button_text = "Cancelar"
+	apagar_dialog.confirmed.connect(func():
+		if not apagar_pendente.is_empty():
+			executar_apagar(apagar_pendente["trechos"], apagar_pendente["nos"])
+		apagar_pendente = {})
+	apagar_dialog.canceled.connect(func():
+		apagar_pendente = {}
+		set_status("Nada foi apagado."))
+	add_child(apagar_dialog)
+
 
 func _menu(mb: MenuBar, titulo: String, itens: Array) -> PopupMenu:
 	var pm := PopupMenu.new()
@@ -599,7 +635,7 @@ func _preencher_menu(pm: PopupMenu, itens: Array) -> void:
 			pm.add_submenu_node_item(str(it[1]), sub)
 			menus[str(it[1])] = sub
 		elif it[0] == "chk":
-			pm.add_check_item(str(it[1]), int(it[2]))
+			pm.add_check_item(str(it[1]), int(it[2]), int(it[3]) if it.size() > 3 else 0)
 			menu_of[int(it[2])] = pm
 		else:
 			pm.add_item(str(it[0]), int(it[1]), int(it[2]) if it.size() > 2 else 0)
@@ -611,12 +647,12 @@ func _build_menu() -> Control:
 	mb.flat = true
 	_menu(mb, "Arquivos", [
 		["Novo…", 0, KEY_MASK_CTRL | KEY_N], ["Novo com imagem…", 1], ["Lê…", 2],
-		["Lê DXF de topografia…", 3], ["Lê DXF de ruas…", 4], ["Lê DXF de pontos cotados…", 5], ["Remove a base topográfica", 6],
+		["Lê DXF de topografia…", 3], ["Lê DXF de ruas…", 4], ["Lê DXF de pontos cotados…", 5], ["Importa rede de DXF…", 98], ["Remove a base topográfica", 6],
 		["sub", "Cadastro e SIG", [["Importa ligações (CSV)…", 90], ["Exporta relatório de ligações (CSV)…", 91], [],
 			["Importa bacias (GeoJSON)…", 92], ["Balanço de contribuições…", 97], [],
 			["Importa interferências (GeoJSON)…", 93], ["Exporta interferências (GeoJSON)…", 94], [],
-			["Exporta rede (GeoJSON)…", 95], ["Importa rede (GeoJSON)…", 96]]], [],
-		["Salva", 7, KEY_F2], ["Salva como…", 8], ["Exporta planta para DXF…", 9], ["Exporta planilha…", 10],
+			["Exporta rede (GeoJSON)…", 95], ["Importa rede (GeoJSON)…", 96], ["Exporta rede (GeoPackage)…", 99]]], [],
+		["Salva", 7, KEY_F2], ["Salva como…", 8], ["Exporta planta para DXF…", 9], ["Exporta planilha…", 10], ["Exporta todas as planilhas (XLSX)…", 18],
 		["Exporta memorial de cálculo (TXT/PDF)…", 11], [],
 		["Imprimir", 12], ["Visualizar impressão de planilha", 13], [],
 		["sub", "Parâmetros", [["Diretório de dados…", 14], ["Banco de itens de custo…", 15], ["Usar banco padrão", 17]]],
@@ -626,7 +662,9 @@ func _build_menu() -> Control:
 		["Área de trabalho…", 20], ["Traçado da rede", 21, KEY_MASK_CTRL | KEY_L], ["Exibição de DXF's", 22, KEY_MASK_CTRL | KEY_X],
 		["Cálculo automático de cotas", 23, KEY_MASK_CTRL | KEY_S], [],
 		["sub", "Resultados", [["chk", "Grava arquivo", 24], ["Prefixo p/ o arquivo…", 25]]], [],
-		["Localizar", 26, KEY_F5], ["Localizar próxima", 27, KEY_F3], [], ["chk", "Visual clássico", 28]])
+		["Localizar", 26, KEY_F5], ["Localizar próxima", 27, KEY_F3], [],
+		["chk", "Orto (só horizontal / vertical)", 38, KEY_F9], ["chk", "Osnap (magnetismo)", 39, KEY_F10], [],
+		["chk", "Visual clássico", 28]])
 	_menu(mb, "Visualizar", [
 		["Zoom in (1,25)", 30, KEY_MASK_CTRL | KEY_I], ["Zoom out (0,80)", 31, KEY_MASK_CTRL | KEY_O], [],
 		["Sem zoom", 32, KEY_MASK_CTRL | KEY_0], ["Último zoom", 33, KEY_MASK_CTRL | KEY_U], ["Janela", 34, KEY_MASK_CTRL | KEY_J],
@@ -637,7 +675,7 @@ func _build_menu() -> Control:
 		["Fixar coordenadas e cotas", 44, KEY_F6], ["Fixar cota do pto mais próx.", 45, KEY_F7],
 		["Interpolação de cotas nas curvas de nível", 46, KEY_F8], [], ["Recalcular cotas", 47], [], ["Carregar rede de exemplo", 48]])
 	_menu(mb, "Trechos", [
-		["Apaga marcados", 50, KEY_DELETE], ["Desmarca trechos", 51], ["Desloca trecho", 52], ["Divide trecho", 53], [], ["Perfil", 54]])
+		["Apaga seleção", 50, KEY_DELETE], ["Desfaz seleção", 51], ["Seleciona tudo", 55], ["Desloca trecho", 52], ["Divide trecho", 53], [], ["Perfil", 54]])
 	_menu(mb, "Banco de dados", [["Itens de custo, materiais e tubos…", 60]])
 	_menu(mb, "Ajuda", [["Conteúdo", 70, KEY_F1], ["Como usar?", 71], ["Créditos", 72], [], ["Registro de erros…", 73]])
 	var pm: PopupMenu = menus["Opções"]
@@ -667,7 +705,7 @@ func _build_toolbar() -> Control:
 		["imprime", 12, "Imprime (abre a planta ou a planilha para impressão)"], ["visualiza", 13, "Visualiza impressão de planilha"], [],
 		["zoom_max", 36, "Ajuste máximo (Ctrl+A)"], ["janela", 34, "Zoom janela (Ctrl+J)"], ["redesenha", 37, "Redesenha (Ctrl+R)"], ["pan", 35, "Pan (Ctrl+P)"], [],
 		["tracado", 40, "Traçado (Ctrl+T)"], ["planilhas", 41, "Planilhas (Ctrl+E)"], ["calculo", 42, "Cálculos / dimensionamento (Ctrl+D)"], [],
-		["apaga", 50, "Apaga trechos marcados (Del)"], ["desmarca", 51, "Desmarca trechos"], ["desloca", 52, "Desloca trecho"], ["divide", 53, "Divide trecho"], [],
+		["apaga", 50, "Apaga a seleção (Del)"], ["desmarca", 51, "Desfaz a seleção (Esc)"], ["desloca", 52, "Desloca trecho"], ["divide", 53, "Divide trecho"], [],
 		["perfil", 54, "Perfil dos trechos marcados"], ["obs", 43, "Planilha de observações"],
 	]
 	for it in itens:
@@ -717,6 +755,22 @@ func _build_statusbar() -> Control:
 		b.pressed.connect(func(): _set_modo(modo if str(opts["cota_modo"]) != modo else "none"))
 		sh.add_child(b)
 		modo_btns[modo] = b
+	var sep := VSeparator.new()
+	sh.add_child(sep)
+	for m in [["orto", "ORTO", "Orto (F9): o trecho e o arrasto de nós ficam só na horizontal ou na vertical"],
+			["osnap", "OSNAP", "Osnap (F10): magnetismo — o cursor gruda em PVs, pontos cotados, vértices de ruas, curvas de nível e ruas"]]:
+		var b := Button.new()
+		b.text = m[1]
+		b.name = "Botao_" + m[0]
+		b.toggle_mode = true
+		b.tooltip_text = m[2]
+		b.focus_mode = Control.FOCUS_NONE
+		b.add_theme_font_size_override("font_size", 11)
+		b.custom_minimum_size = Vector2(50, 0)
+		var chave: String = m[0]
+		b.pressed.connect(func(): alternar_orto() if chave == "orto" else alternar_osnap())
+		sh.add_child(b)
+		modo_btns[chave] = b
 	status_label = Label.new()
 	status_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	status_label.clip_text = true
@@ -754,7 +808,7 @@ func _on_cursor(e: float, n: float, z: float, dist: float) -> void:
 func _mostrar(v: String) -> void:
 	view = "planilhas" if v == "planilhas" else "tracado"
 	plan.visible = view == "tracado"
-	sheets.visible = view == "planilhas"
+	sheets_box.visible = view == "planilhas"
 	if view == "planilhas":
 		_refresh_sheet(sheets.current_tab)
 		tables[SHEETS[sheets.current_tab][0]].grab_focus()
@@ -776,8 +830,10 @@ func _set_disabled(id: int, b: bool) -> void:
 func _atualizar_menus() -> void:
 	var nm: int = plan.marked.size()
 	var tr := view == "tracado"
-	for id in [50, 51, 53]:
-		_set_disabled(id, nm == 0 or not tr)
+	for id in [50, 51]:
+		_set_disabled(id, not plan.tem_selecao() or not tr)
+	_set_disabled(53, nm == 0 or not tr)
+	_set_disabled(55, not tr)
 	_set_disabled(52, nm != 1 or not tr)
 	_set_disabled(54, nm == 0 or not resultados_validos)
 	_set_disabled(43, results.get("obs", []).is_empty())
@@ -803,11 +859,35 @@ func atualizar_modos() -> void:
 	var m := str(opts.get("cota_modo", "int"))
 	for k in modo_btns.keys():
 		var b: Button = modo_btns[k]
+		if k in ["orto", "osnap"]:
+			b.set_pressed_no_signal(bool(opts.get(k, k == "osnap")))
+			continue
 		b.disabled = (k == "int" and not tem_c) or (k != "int" and not tem_p)
 		b.set_pressed_no_signal(m == k and not b.disabled)
+	var po: PopupMenu = menus["Opções"]
+	po.set_item_checked(po.get_item_index(38), bool(opts.get("orto", false)))
+	po.set_item_checked(po.get_item_index(39), bool(opts.get("osnap", true)))
 	_set_disabled(44, not tem_p)
 	_set_disabled(45, not tem_p)
 	_set_disabled(46, not tem_c)
+
+
+func alternar_orto() -> void:
+	opts["orto"] = not bool(opts.get("orto", false))
+	salvar_config()
+	atualizar_modos()
+	set_status("ORTO %s (F9): %s" % ["ligado" if opts["orto"] else "desligado",
+		"trechos e arrasto de nós só na horizontal ou na vertical." if opts["orto"] else "traçado livre."])
+
+
+func alternar_osnap() -> void:
+	opts["osnap"] = not bool(opts.get("osnap", true))
+	salvar_config()
+	atualizar_modos()
+	plan.snap = {}
+	plan.over.queue_redraw()
+	set_status("OSNAP %s (F10): %s" % ["ligado" if opts["osnap"] else "desligado",
+		"o cursor gruda em PVs, pontos cotados, vértices de ruas, curvas de nível e ruas." if opts["osnap"] else "sem magnetismo."])
 
 
 func _set_modo(m: String) -> void:
@@ -921,9 +1001,31 @@ func executar_calculo(gravar := true) -> Dictionary:
 		set_status("Resultado NÃO aprovado: há restrições impeditivas (ver Planilha de Observações). %d trechos calculados." % results["rows"].size())
 		registro.acao("Dimensionamento com restrições impeditivas (não aprovado)")
 	else:
-		set_status("Dimensionamento concluído: %d trechos, %d observação(ões). Total orçado: R$ %s." % [
-			results["rows"].size(), results["obs"].size(), fmt(results["orc"]["total"], 2)])
+		set_status("Dimensionamento concluído: %d trechos, %d observação(ões)%s. Total orçado: R$ %s." % [
+			results["rows"].size(), results["obs"].size(),
+			", %d alerta(s) da rede" % results.get("alertas", []).size() if not results.get("alertas", []).is_empty() else "",
+			fmt(results["orc"]["total"], 2)])
 	return results
+
+
+## Texto da janela de alertas da rede (trecho isolado / terreno sem caimento).
+func texto_alertas(alertas: Array, max_itens := 12) -> String:
+	var iso: Array = []
+	var sc: Array = []
+	for a in alertas:
+		if str(a["tipo"]) == "isolado":
+			iso.append("• " + str(a["texto"]))
+		else:
+			sc.append("• " + str(a["texto"]))
+	var partes: Array = []
+	if not iso.is_empty():
+		partes.append("TRECHOS ISOLADOS, SEM DESÁGUE NA REDE PRINCIPAL (%d):\n%s" % [iso.size(), "\n".join(PackedStringArray(iso.slice(0, max_itens)))]
+			+ ("\n  … e mais %d" % (iso.size() - max_itens) if iso.size() > max_itens else ""))
+	if not sc.is_empty():
+		partes.append("TRECHOS COM TERRENO SEM CAIMENTO (%d):\n%s" % [sc.size(), "\n".join(PackedStringArray(sc.slice(0, max_itens)))]
+			+ ("\n  … e mais %d" % (sc.size() - max_itens) if sc.size() > max_itens else ""))
+	partes.append("O cálculo foi feito; os alertas também estão na Planilha de Observações.")
+	return "\n\n".join(PackedStringArray(partes))
 
 
 func _gravar_res() -> void:
@@ -1042,7 +1144,7 @@ func exportar_planilha_arquivo(key: String, path: String) -> Dictionary:
 	var ok := false
 	match path.get_extension().to_lower():
 		"xlsx":
-			ok = Report.gravar_xlsx(path, titulo, dados, info)
+			ok = Report.gravar_xlsx(path, titulo, dados, info, int(COLUNAS_FIXAS.get(key, 0)))
 			if not ok:
 				registro.aviso("Falha ao gravar %s" % path)
 		"html", "htm":
@@ -1339,6 +1441,12 @@ func _on_menu(id: int) -> void:
 			_ask_discard("importar_rede")
 		97:
 			dlg.texto_longo("Balanço de contribuições", texto_balanco(), "balanco.txt")
+		98:
+			_ler_dxf_rede()
+		99:
+			pedir_arquivo("salvar", ["*.gpkg ; GeoPackage"], _safe_name() + "-rede.gpkg", exportar_rede_gpkg)
+		18:
+			pedir_arquivo("salvar", ["*.xlsx ; Pasta de trabalho Excel"], _safe_name() + "-planilhas.xlsx", exportar_todas_planilhas)
 		12:
 			_imprimir()
 		13:
@@ -1381,6 +1489,10 @@ func _on_menu(id: int) -> void:
 			salvar_config()
 			_apply_theme()
 			plan.redesenhar()
+		38:
+			alternar_orto()
+		39:
+			alternar_osnap()
 		80:
 			desfazer()
 		81:
@@ -1426,11 +1538,19 @@ func _on_menu(id: int) -> void:
 		48:
 			_ask_discard("exemplo")
 		50:
-			apagar_marcados()
+			apagar_selecao()
 		51:
-			plan.marked.clear()
+			plan.limpar_selecao()
 			plan.redesenhar()
 			_atualizar_menus()
+		55:
+			plan.limpar_selecao()
+			for n in proj["nodes"]:
+				plan.sel_nos[int(n["id"])] = true
+			for t in proj["trechos"]:
+				plan.marked[int(t["id"])] = true
+			plan.redesenhar()
+			on_marcados()
 		52:
 			if plan.marked.size() == 1:
 				dlg.abrir_desloca(int(plan.marked.keys()[0]))
@@ -1622,14 +1742,77 @@ func _novo_com_imagem(path: String) -> void:
 	dlg.abrir_area()
 
 
-func apagar_marcados() -> void:
-	if plan.marked.is_empty():
-		set_status("Marque os trechos (Ctrl + botão 1 sobre a seta do trecho) antes de apagar.")
+## Del / Trechos › Apaga seleção: confere as regras da rede e pede confirmação.
+func apagar_selecao() -> void:
+	plan.encerrar_tracado()
+	if not plan.tem_selecao():
+		set_status("Selecione o que apagar: clique num nó ou trecho, ou arraste uma caixa de seleção na área vazia.")
 		return
-	var n := Net.apagar_trechos(proj, plan.marked)
-	plan.marked.clear()
+	var trs: Dictionary = plan.marked.duplicate()
+	var nos: Dictionary = plan.sel_nos.duplicate()
+	var sim := Net.simular_apagar(proj, trs, nos)
+	if not bool(sim["ok"]):
+		alertar("Não é possível apagar", "\n\n".join(PackedStringArray(sim["erros"])) + "\n\nA rede não pode ficar com trechos sem saída.")
+		return
+	apagar_pendente = {"trechos": trs, "nos": nos}
+	apagar_dialog.dialog_text = texto_confirmar_apagar(trs, nos, sim)
+	apagar_dialog.popup_centered()
+
+
+func texto_confirmar_apagar(trs: Dictionary, nos: Dictionary, sim: Dictionary) -> String:
+	var nm := Net.node_map(proj)
+	var tm := Net.trecho_map(proj)
+	var partes: Array = []
+	if nos.size() == 1 and trs.is_empty():
+		var nid := int(nos.keys()[0])
+		partes.append("Deseja mesmo apagar o ponto (nó) %s?" % (str(nm[nid]["nome"]) if nm.has(nid) else str(nid)))
+	else:
+		var t_nomes: Array = []
+		for tid in trs.keys():
+			if tm.has(int(tid)):
+				t_nomes.append(str(tm[int(tid)]["nome"]))
+		var n_nomes: Array = []
+		for nid in nos.keys():
+			if nm.has(int(nid)):
+				n_nomes.append(str(nm[int(nid)]["nome"]))
+		var lista := func(a: Array) -> String:
+			return ", ".join(PackedStringArray(a.slice(0, 12))) + (" …" if a.size() > 12 else "")
+		partes.append("Deseja mesmo apagar a seleção?")
+		if not n_nomes.is_empty():
+			partes.append("Pontos (nós): %s" % lista.call(n_nomes))
+		if not t_nomes.is_empty():
+			partes.append("Trechos: %s" % lista.call(t_nomes))
+	partes.append("")
+	partes.append("Serão removidos %d trecho(s) e %d nó(s)." % [int(sim["n_trechos"]), int(sim["n_nos"])])
+	if not sim["unidos"].is_empty():
+		partes.append("Trechos unidos no lugar dos pontos intermediários: %s." % ", ".join(PackedStringArray(sim["unidos"])))
+	partes.append("Ctrl+Z desfaz.")
+	return "\n".join(PackedStringArray(partes))
+
+
+## Apaga trechos e nós aplicando as regras (Net.simular_apagar). Sem confirmação: usado depois
+## do diálogo e pelos testes. Retorna o resultado da simulação.
+func executar_apagar(trs: Dictionary, nos: Dictionary) -> Dictionary:
+	plan.encerrar_tracado()
+	var sim := Net.simular_apagar(proj, trs, nos)
+	if not bool(sim["ok"]):
+		alertar("Não é possível apagar", "\n\n".join(PackedStringArray(sim["erros"])))
+		return sim
+	proj["nodes"] = sim["nodes"]
+	proj["trechos"] = sim["trechos"]
+	plan.limpar_selecao()
 	on_changed("apagar")
-	set_status("%d trecho(s) apagado(s). Nós sem trechos também foram removidos." % n)
+	set_status("%d trecho(s) e %d nó(s) apagado(s)%s. Ctrl+Z desfaz." % [int(sim["n_trechos"]), int(sim["n_nos"]),
+		"; trechos unidos: " + ", ".join(PackedStringArray(sim["unidos"])) if not sim["unidos"].is_empty() else ""])
+	return sim
+
+
+## Compatibilidade: apaga a seleção atual sem pedir confirmação.
+func apagar_marcados() -> Dictionary:
+	if not plan.tem_selecao():
+		set_status("Selecione os trechos ou nós antes de apagar.")
+		return {"ok": false, "erros": ["nada selecionado"]}
+	return executar_apagar(plan.marked.duplicate(), plan.sel_nos.duplicate())
 
 
 func _dividir() -> void:
@@ -1855,7 +2038,7 @@ func _set_projeto(p: Dictionary, path: String) -> void:
 	current_path = path
 	registro.projeto(path)
 	dirty = false
-	plan.marked.clear()
+	plan.limpar_selecao()
 	plan.cancelar()
 	plan.rastro = {}
 	plan.destaque = Vector2(NAN, NAN)
@@ -2192,6 +2375,198 @@ func _exportar_planilha() -> void:
 		return
 	pedir_arquivo("salvar", ["*.csv ; Planilha CSV (Excel / LibreOffice)", "*.xlsx ; Pasta de trabalho Excel", "*.html ; Arquivo HTML", "*.pdf ; PDF"],
 		"%s-%s.csv" % [_safe_name(), str(sh[0])], func(path): exportar_planilha_arquivo(str(sh[0]), path))
+
+
+const FORMATOS_PLANILHA := {"csv": "*.csv ; Planilha CSV (Excel / LibreOffice)", "xlsx": "*.xlsx ; Pasta de trabalho Excel",
+	"html": "*.html ; Arquivo HTML", "pdf": "*.pdf ; PDF"}
+
+
+## Barra acima das planilhas: exporta a aba atual em cada formato ou todas de uma vez (XLSX).
+func _build_barra_planilhas() -> Control:
+	var m := MarginContainer.new()
+	m.name = "BarraPlanilhas"
+	for side in ["left", "right"]:
+		m.add_theme_constant_override("margin_" + side, 8)
+	m.add_theme_constant_override("margin_top", 3)
+	m.add_theme_constant_override("margin_bottom", 3)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 6)
+	m.add_child(h)
+	var l := Label.new()
+	l.text = "Exportar esta planilha:"
+	h.add_child(l)
+	for fmt_ in ["csv", "xlsx", "html", "pdf"]:
+		var b := Button.new()
+		b.text = fmt_.to_upper()
+		b.name = "Exp_" + fmt_
+		b.focus_mode = Control.FOCUS_NONE
+		b.tooltip_text = "Exporta a aba atual em %s" % fmt_.to_upper()
+		var f: String = fmt_
+		b.pressed.connect(func(): _exportar_planilha_fmt(f))
+		h.add_child(b)
+	var s := VSeparator.new()
+	s.custom_minimum_size = Vector2(12, 0)
+	h.add_child(s)
+	var todas := Button.new()
+	todas.name = "Exp_todas"
+	todas.text = "Todas as planilhas (XLSX)…"
+	todas.focus_mode = Control.FOCUS_NONE
+	todas.tooltip_text = "Uma pasta de trabalho com uma aba por planilha (resultados e orçamento só com dimensionamento aprovado e atualizado)"
+	todas.pressed.connect(func(): _on_menu(18))
+	h.add_child(todas)
+	return m
+
+
+func _exportar_planilha_fmt(f: String) -> void:
+	var sh: Array = SHEETS[sheets.current_tab]
+	if sh[0] in ["res", "orc"] and _avisar_bloqueio("planilha"):
+		return
+	pedir_arquivo("salvar", [FORMATOS_PLANILHA[f]], "%s-%s.%s" % [_safe_name(), str(sh[0]), f],
+		func(path): exportar_planilha_arquivo(str(sh[0]), path))
+
+
+## Exporta todas as planilhas numa pasta de trabalho XLSX (uma aba por planilha + aba Info).
+## Resultados e orçamento só entram com resultado aprovado e atualizado; observações, se houver.
+func exportar_todas_planilhas(path: String) -> Dictionary:
+	var abas: Array = []
+	var omitidas: Array = []
+	var bloq := motivo_bloqueio()
+	for i in SHEETS.size():
+		var key: String = SHEETS[i][0]
+		var titulo: String = SHEETS[i][1]
+		if key in ["res", "orc"] and bloq != "":
+			omitidas.append("%s (%s)" % [titulo, bloq])
+			continue
+		if key == "obs" and results.get("obs", []).is_empty():
+			omitidas.append("%s (sem observações)" % titulo)
+			continue
+		_refresh_sheet(i)
+		abas.append({"nome": titulo, "dados": tables[key].dados(), "fixas": int(COLUNAS_FIXAS.get(key, 0))})
+	var info := info_rastreio()
+	if not omitidas.is_empty():
+		info["Planilhas não incluídas"] = "; ".join(PackedStringArray(omitidas))
+	if view == "planilhas":
+		_refresh_sheet(sheets.current_tab)
+	var ok := Report.gravar_xlsx_abas(path, abas, info)
+	if ok:
+		set_status("%d planilha(s) exportada(s) em %s%s" % [abas.size(), path.get_file(),
+			"  (não incluídas: %s)" % ", ".join(PackedStringArray(omitidas)) if not omitidas.is_empty() else ""])
+	else:
+		registro.aviso("Falha ao gravar %s" % path)
+		dlg.mensagem("Exportação", "Não foi possível gravar %s." % path)
+	return {"ok": ok, "abas": abas.map(func(a): return a["nome"]), "omitidas": omitidas}
+
+
+# ------------------------------------------------------------------ rede: DXF e GeoPackage
+
+func _ler_dxf_rede() -> void:
+	pedir_arquivo("abrir", ["*.dxf ; Desenho DXF"], "", func(path):
+		var info := Dxf.ler(path)
+		if not bool(info["ok"]):
+			dlg.mensagem("Importação de rede (DXF)", str(info["erro"]))
+			registro.aviso("Leitura de DXF da rede falhou (%s): %s" % [path, str(info["erro"])])
+			return
+		if info["layers"].is_empty():
+			dlg.mensagem("Importação de rede (DXF)", "Nenhuma entidade reconhecida no arquivo.")
+			return
+		dlg.abrir_layers("DXF Rede - Seleção de Layers (linhas e polilinhas viram trechos)", path, info,
+			["REDE", "ESGOTO", "COLETOR", "TRECHO", "ESG"], func(sel): importar_rede_dxf(path, sel)))
+
+
+## Importa a rede de um DXF: cada LINE/POLYLINE/LWPOLYLINE dos layers escolhidos vira um coletor
+## (desenhado de montante para jusante); vértices coincidentes (até 5 cm) viram o mesmo nó.
+## Os trechos que violam as regras da rede são recusados e listados. A rede importada é somada
+## ao projeto aberto; num projeto vazio ela é numerada automaticamente.
+func importar_rede_dxf(path: String, sel: Dictionary) -> Dictionary:
+	var info := Dxf.ler(path)
+	if not bool(info["ok"]):
+		dlg.mensagem("Importação de rede (DXF)", str(info["erro"]))
+		return {"ok": false, "erro": str(info["erro"])}
+	var polis: Array = []
+	for e in info["ents"]:
+		if str(e["tipo"]) == "POLY" and (sel.is_empty() or sel.has(str(e["layer"]))):
+			polis.append(e["pts"])
+	var vazio: bool = proj["nodes"].is_empty()
+	var r := Net.de_polilinhas(polis, db, 0.05, Net._novo_id(proj["nodes"]), Net._novo_id(proj["trechos"]))
+	if r["trechos"].is_empty():
+		var erro := "Nenhum trecho válido nas linhas dos layers selecionados." + ("\n\n• " + "\n• ".join(PackedStringArray(r["avisos"])) if not r["avisos"].is_empty() else "")
+		dlg.mensagem("Importação de rede (DXF)", erro)
+		registro.aviso("Importação de rede DXF (%s): %s" % [path.get_file(), erro.get_slice("\n", 0)])
+		return {"ok": false, "erro": erro, "avisos": r["avisos"]}
+	# coletores e nomes sem conflito com a rede já existente
+	var base_col := int(Net.coletor_novo(proj).substr(1)) - 1
+	var max_no := 0
+	for n in proj["nodes"]:
+		if str(n["nome"]).is_valid_int():
+			max_no = maxi(max_no, int(n["nome"]))
+	var max_tr := 0
+	for t in proj["trechos"]:
+		if str(t["nome"]).begins_with("T") and str(t["nome"]).substr(1).is_valid_int():
+			max_tr = maxi(max_tr, int(str(t["nome"]).substr(1)))
+	var k := 0
+	for n in r["nodes"]:
+		k += 1
+		n["nome"] = str(max_no + k)
+		var cr := cota_auto(Net.pos(n))
+		if bool(cr["ok"]):
+			n["ct"] = snappedf(float(cr["z"]), 0.001)
+			n["ct_ok"] = true
+	k = 0
+	for t in r["trechos"]:
+		k += 1
+		t["nome"] = "T%d" % (max_tr + k)
+		t["coletor"] = "C%d" % (base_col + int(str(t["coletor"]).substr(1)))
+	proj["nodes"].append_array(r["nodes"])
+	proj["trechos"].append_array(r["trechos"])
+	if vazio:
+		Net.renumerar(proj)
+	# área de trabalho cobre a rede importada
+	var bb := area_rect_proj()
+	for n in proj["nodes"]:
+		bb = bb.expand(Net.pos(n))
+	if not bb.is_equal_approx(area_rect_proj()):
+		bb = bb.grow(20.0)
+		proj["area"]["e0"] = floorf(bb.position.x)
+		proj["area"]["n0"] = floorf(bb.position.y)
+		proj["area"]["le"] = ceilf(bb.size.x)
+		proj["area"]["ln"] = ceilf(bb.size.y)
+	plan.limpar_selecao()
+	on_changed("dxf_rede")
+	plan.ajuste_maximo()
+	var avisos: Array = r["avisos"]
+	for a in avisos:
+		registro.aviso("DXF da rede %s: %s" % [path.get_file(), a])
+	var sem_cota := 0
+	for n in r["nodes"]:
+		if not bool(n["ct_ok"]):
+			sem_cota += 1
+	if sem_cota > 0:
+		avisos = avisos + ["%d nó(s) sem cota do terreno (sem topografia): informe as cotas ou leia a topografia e use Acionar › Recalcular cotas." % sem_cota]
+	set_status("Rede importada de %s: %d nós e %d trechos%s." % [path.get_file(), r["nodes"].size(), r["trechos"].size(),
+		", %d segmento(s) recusado(s)" % int(r["recusados"]) if int(r["recusados"]) > 0 else ""])
+	if not avisos.is_empty():
+		dlg.mensagem("Importação de rede (DXF) — avisos", "• " + "\n• ".join(PackedStringArray(avisos)))
+	return {"ok": true, "nos": r["nodes"].size(), "trechos": r["trechos"].size(), "recusados": int(r["recusados"]), "avisos": avisos}
+
+
+func area_rect_proj() -> Rect2:
+	var a: Dictionary = proj["area"]
+	return Rect2(float(a["e0"]), float(a["n0"]), float(a["le"]), float(a["ln"]))
+
+
+## Exporta a rede em GeoPackage (.gpkg): camadas "pvs" e "trechos"; com resultado aprovado e
+## atualizado, os trechos levam também os resultados do dimensionamento.
+func exportar_rede_gpkg(path: String) -> Dictionary:
+	var com_res := resultados_validos and motivo_bloqueio() == ""
+	var dados := Gpkg.rede(proj, results if com_res else {})
+	if dados.is_empty():
+		dlg.mensagem("GeoPackage", "Não foi possível montar o GeoPackage.")
+		return {"ok": false}
+	var ok := gravar_bytes(path, dados)
+	if ok:
+		set_status("Rede exportada em GeoPackage: %s (%d PVs, %d trechos%s)." % [path.get_file(), proj["nodes"].size(), proj["trechos"].size(),
+			", com resultados" if com_res else ", sem resultados — dimensione para incluí-los"])
+	return {"ok": ok, "com_resultados": com_res, "bytes": dados.size()}
 
 
 func _imprimir() -> void:

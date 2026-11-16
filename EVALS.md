@@ -36,7 +36,7 @@ tests/
 
 O runner deve retornar código de saída diferente de zero quando qualquer eval falhar.
 
-Os casos concretos das fases 2 a 5 estão em [tests/PHASE-2-5.md](<tests/PHASE-2-5.md>). O agente deve implementar os testes mantendo os IDs `T2-*`, `T3-*`, `T4-*` e `T5-*` para que os relatórios sejam comparáveis entre versões.
+Os casos concretos das fases 2 a 5 estão em [tests/PHASE-2-5.md](<tests/PHASE-2-5.md>) e os das fases 6 e 7 em [tests/PHASE-6.md](<tests/PHASE-6.md>) e [tests/PHASE-7.md](<tests/PHASE-7.md>). O agente deve implementar os testes mantendo os IDs `T2-*` a `T7-*` para que os relatórios sejam comparáveis entre versões.
 
 ---
 
@@ -337,6 +337,50 @@ Novas funcionalidades devem consumir o modelo de domínio e os serviços existen
 
 ---
 
+## Fase 6 — edição da rede, planilhas e intercâmbio
+
+Prioridade: P1 (pedido do usuário de 16/11/2026). Casos concretos em [tests/PHASE-6.md](<tests/PHASE-6.md>), IDs `T6-*`.
+
+### EVAL-601 — regras de ligação
+
+Um afluente só pode ser ligado a um PV que já tenha saída (trecho de jusante), e cada PV recebe no máximo 3 trechos. Ligações fora das regras são recusadas com alerta ao usuário (T6-01, T6-04).
+
+### EVAL-602 — exclusão segura
+
+Nenhuma exclusão pode deixar trechos sem saída. Apagar ponto ou seleção pede confirmação, une trechos quando o ponto é intermediário e não deixa nós soltos. Iniciar e abandonar um traçado não deixa resíduo (T6-02, T6-03, T6-05).
+
+### EVAL-603 — seleção por caixa
+
+Arrastar na área vazia seleciona tudo o que estiver inteiramente dentro da caixa. Ctrl soma, e Del apaga com confirmação (T6-06).
+
+### EVAL-604 — planilhas
+
+Cada planilha é exportável a partir da própria vista (CSV, XLSX, HTML e PDF), e todas juntas num XLSX. As colunas de identificação ficam fixas ao rolar, na tela e no XLSX (T6-07, T6-08).
+
+### EVAL-605 — intercâmbio CAD/SIG
+
+Importação da rede a partir de DXF (linhas e polilinhas) e exportação em GeoPackage válido, conferida com um leitor SQLite independente (T6-09).
+
+---
+
+## Fase 7 — traçado assistido e alertas de cálculo
+
+Prioridade: P1 (pedido do usuário de 16/11/2026, segunda leva). Casos concretos em [tests/PHASE-7.md](<tests/PHASE-7.md>), IDs `T7-*`.
+
+### EVAL-701 — cota do PV pelo raio de busca
+
+Ao colocar um PV, o raio de busca da interpolação aparece no cursor junto com a cota que o PV vai receber. Sobre uma curva de nível, vale a cota da curva, sem interpolar (T7-01).
+
+### EVAL-702 — osnap e orto
+
+O magnetismo captura PVs, pontos cotados, vértices de ruas, curvas e ruas, com marcador visível. O orto restringe o traçado e o arrasto à horizontal e à vertical. Atalhos: F10 e F9 (T7-02, T7-03).
+
+### EVAL-703 — alertas de rede no cálculo
+
+Trecho isolado (sem deságue na rede principal) e terreno sem caimento geram alerta ao calcular, sem bloquear o resultado e sem alterar o status hidráulico dos trechos (T7-04).
+
+---
+
 ## Portão de aprovação para o agente de código
 
 O agente só deve considerar o projeto pronto para a próxima fase quando:
@@ -361,4 +405,8 @@ Fase 3: SIG, bacias e cadastro
 Fase 4: entregáveis de engenharia
     ↓
 Fase 5: robustez e funcionalidades extras
+    ↓
+Fase 6: edição da rede, planilhas e intercâmbio (DXF / GeoPackage)
+    ↓
+Fase 7: traçado assistido (raio de busca, osnap, orto) e alertas de cálculo
 ```

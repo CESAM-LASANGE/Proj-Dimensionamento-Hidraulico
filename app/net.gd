@@ -5,6 +5,9 @@ extends RefCounted
 
 const Db = preload("res://db.gd")
 
+## Número máximo de trechos que chegam num mesmo PV.
+const MAX_ENTRADAS := 3
+
 
 static func novo_projeto(params: Dictionary) -> Dictionary:
 	return {
@@ -183,6 +186,217 @@ static func alcanca(proj: Dictionary, de: int, ate: int) -> bool:
 		cur = int(out[cur])
 		guard += 1
 	return true
+
+
+static func entradas(proj: Dictionary, nid: int) -> Array:
+	var out: Array = []
+	for t in proj["trechos"]:
+		if int(t["nf"]) == nid:
+			out.append(t)
+	return out
+
+
+static func nome_no(proj: Dictionary, nid: int) -> String:
+	var n = node_map(proj).get(nid)
+	return str(n["nome"]) if n != null else str(nid)
+
+
+## Regras de ligação do traçado a um nó existente (de → ate):
+##   • o nó de destino precisa ter saída (trecho de jusante): uma ligação num nó sem saída
+##     deixaria os afluentes sem escoamento;
+##   • um PV recebe no máximo MAX_ENTRADAS trechos;
+##   • não pode formar laço.
+## Retorna {ok, motivo, regra} (regra: "laco", "sem_saida", "max_entradas", "mesmo_no", "no_inexistente").
+static func pode_ligar(proj: Dictionary, de: int, ate: int) -> Dictionary:
+	var nodes := node_map(proj)
+	if not nodes.has(de) or not nodes.has(ate):
+		return {"ok": false, "regra": "no_inexistente", "motivo": "Nó inexistente."}
+	if de == ate:
+		return {"ok": false, "regra": "mesmo_no", "motivo": "O trecho não pode começar e terminar no mesmo nó."}
+	var nome := str(nodes[ate]["nome"])
+	if alcanca(proj, ate, de):
+		return {"ok": false, "regra": "laco", "motivo": "Ligação recusada: formaria um laço (o nó %s está a jusante)." % nome}
+	if not tem_saida(proj, ate):
+		return {"ok": false, "regra": "sem_saida",
+			"motivo": "O nó %s não tem saída (trecho de jusante).\nNão é possível ligar um trecho a um PV sem saída: o esgoto que chega nele ficaria sem escoamento.\n\nContinue o traçado a partir desse nó (Shift + botão 1) ou ligue o trecho a um PV que já tenha saída." % nome}
+	var ent := entradas(proj, ate)
+	if ent.size() >= MAX_ENTRADAS:
+		var nomes: Array = []
+		for t in ent:
+			nomes.append(str(t["nome"]))
+		return {"ok": false, "regra": "max_entradas",
+			"motivo": "O PV %s já recebe %d trechos (%s).\nCada PV aceita no máximo %d entradas.\n\nLigue o trecho a outro PV, a jusante ou a montante deste." % [nome, ent.size(), ", ".join(PackedStringArray(nomes)), MAX_ENTRADAS]}
+	return {"ok": true, "regra": "", "motivo": ""}
+
+
+## Remove nós sem nenhum trecho (resíduos). "manter" preserva um nó (ex.: início do traçado em andamento).
+static func remover_orfaos(proj: Dictionary, manter := -1) -> int:
+	var usados := {}
+	for t in proj["trechos"]:
+		usados[int(t["ni"])] = true
+		usados[int(t["nf"])] = true
+	var nn: Array = []
+	for n in proj["nodes"]:
+		if usados.has(int(n["id"])) or int(n["id"]) == manter:
+			nn.append(n)
+	var k: int = proj["nodes"].size() - nn.size()
+	proj["nodes"] = nn
+	return k
+
+
+## Simula a exclusão de trechos e nós sem tocar no projeto. Regras:
+##   • nó com 1 chegada e 1 saída (ponto intermediário): os dois trechos viram um só;
+##   • nó de cabeceira ou de saída: sai junto com o trecho ligado a ele;
+##   • nó que recebe 2 ou mais trechos não pode ser apagado (os afluentes ficariam sem saída);
+##   • nenhum nó pode ficar com 2 ou mais chegadas e sem saída (apagar o trecho de jusante de
+##     um PV com várias chegadas é recusado);
+##   • nós que ficam sem trechos são removidos (sem resíduos).
+## Retorna {ok, erros: [texto], nodes, trechos, n_trechos, n_nos, unidos: [nomes]}.
+static func simular_apagar(proj: Dictionary, trechos_ids: Dictionary, nos_ids: Dictionary) -> Dictionary:
+	var sim := {"nodes": proj["nodes"].duplicate(true), "trechos": proj["trechos"].duplicate(true)}
+	var erros: Array = []
+	var unidos: Array = []
+	var orig_out: Dictionary = ligacoes(proj)["out"]
+	var orig_tm := trecho_map(proj)
+	# 1) trechos
+	var restantes: Array = []
+	for t in sim["trechos"]:
+		if not trechos_ids.has(int(t["id"])):
+			restantes.append(t)
+	sim["trechos"] = restantes
+	# 2) nós
+	var ids_nos: Array = nos_ids.keys()
+	ids_nos.sort()
+	for x in ids_nos:
+		var nid := int(x)
+		if not node_map(sim).has(nid):
+			continue
+		var inc: Array = entradas(sim, nid)
+		var out: Array = []
+		for t in sim["trechos"]:
+			if int(t["ni"]) == nid:
+				out.append(t)
+		var nome := str(node_map(sim)[nid]["nome"])
+		if inc.size() >= 2:
+			var nomes: Array = []
+			for t in inc:
+				nomes.append(str(t["nome"]))
+			erros.append("O nó %s recebe %d trechos (%s): apagá-lo deixaria esses trechos sem saída. Apague antes os trechos que chegam nele." % [nome, inc.size(), ", ".join(PackedStringArray(nomes))])
+			continue
+		if inc.size() == 1 and out.size() == 1:
+			var a: Dictionary = inc[0]
+			var b: Dictionary = out[0]
+			a["nf"] = int(b["nf"])
+			if float(a.get("ext_fix", 0.0)) > 0.0 or float(b.get("ext_fix", 0.0)) > 0.0:
+				var nodes0 := node_map(sim)
+				var la := float(a["ext_fix"]) if float(a.get("ext_fix", 0.0)) > 0.0 else pos(nodes0[int(a["ni"])]).distance_to(pos(nodes0[nid]))
+				var lb := float(b["ext_fix"]) if float(b.get("ext_fix", 0.0)) > 0.0 else pos(nodes0[nid]).distance_to(pos(nodes0[int(b["nf"])]))
+				a["ext_fix"] = la + lb
+			a["fixa_cotas"] = false
+			sim["trechos"].erase(b)
+			unidos.append("%s + %s" % [a["nome"], b["nome"]])
+		else:
+			for t in inc + out:
+				sim["trechos"].erase(t)
+		var nn: Array = []
+		for n in sim["nodes"]:
+			if int(n["id"]) != nid:
+				nn.append(n)
+		sim["nodes"] = nn
+	remover_orfaos(sim)
+	# 3) nenhum nó com várias chegadas pode ficar sem saída
+	var lig := ligacoes(sim)
+	for n in sim["nodes"]:
+		var nid := int(n["id"])
+		if lig["inc"].get(nid, []).size() >= 2 and lig["out"].get(nid, []).is_empty() and not orig_out.get(nid, []).is_empty():
+			var chegam: Array = []
+			for tid in lig["inc"][nid]:
+				for t in sim["trechos"]:
+					if int(t["id"]) == int(tid):
+						chegam.append(str(t["nome"]))
+			var saida: Array = []
+			for tid in orig_out[nid]:
+				saida.append(str(orig_tm[int(tid)]["nome"]))
+			erros.append("O trecho %s não pode ser apagado: o PV %s (montante dele) recebe %d trechos (%s) e eles ficariam sem saída. Apague antes os trechos que chegam nesse PV ou ligue-os a outra saída." % [
+				", ".join(PackedStringArray(saida)), n["nome"], chegam.size(), ", ".join(PackedStringArray(chegam))])
+	return {"ok": erros.is_empty(), "erros": erros, "nodes": sim["nodes"], "trechos": sim["trechos"],
+		"n_trechos": proj["trechos"].size() - sim["trechos"].size(), "n_nos": proj["nodes"].size() - sim["nodes"].size(), "unidos": unidos}
+
+
+## Monta trechos a partir de polilinhas (importação de DXF da rede). Cada polilinha é um
+## coletor, desenhado de montante para jusante; vértices a menos de "tol" metros viram o
+## mesmo nó. Segmentos que violam as regras da rede são recusados com aviso.
+## Retorna {nodes, trechos, avisos, recusados} com ids a partir de id_no / id_tr.
+static func de_polilinhas(polis: Array, db: Dictionary, tol := 0.05, id_no := 1, id_tr := 1) -> Dictionary:
+	var sim := {"nodes": [], "trechos": []}
+	var avisos: Array = []
+	var recusados := 0
+	var chave := func(p: Vector2) -> Vector2i: return Vector2i(roundi(p.x / tol), roundi(p.y / tol))
+	var por_chave := {}
+	var nid := id_no - 1
+	var tid := id_tr - 1
+	var col := 0
+	var no_de := func(p: Vector2) -> int:
+		var k: Vector2i = chave.call(p)
+		for dx in [-1, 0, 1]:
+			for dy in [-1, 0, 1]:
+				var k2 := k + Vector2i(dx, dy)
+				if por_chave.has(k2) and pos(por_chave[k2]).distance_to(p) <= tol:
+					return int(por_chave[k2]["id"])
+		return -1
+	for k in polis.size():
+		var pts: PackedVector2Array = polis[k]
+		if pts.size() < 2:
+			continue
+		if pts.size() > 2 and pts[0].distance_to(pts[pts.size() - 1]) <= tol:
+			avisos.append("Polilinha %d é fechada (contorno): ignorada." % (k + 1))
+			recusados += 1
+			continue
+		col += 1
+		var nome_col := "C%d" % col
+		var ant := -1
+		for j in pts.size():
+			var p: Vector2 = pts[j]
+			var atual: int = no_de.call(p)
+			if atual < 0:
+				nid += 1
+				var n := {"id": nid, "nome": str(nid), "e": p.x, "n": p.y, "ct": 0.0, "ct_ok": false, "tipo": "PV", "qp_i": 0.0, "qp_f": 0.0}
+				sim["nodes"].append(n)
+				por_chave[chave.call(p)] = n
+				atual = nid
+			if ant >= 0 and atual != ant:
+				var motivo := ""
+				if tem_saida(sim, ant):
+					motivo = "o nó de montante já tem saída (bifurcação)"
+				elif alcanca(sim, atual, ant):
+					motivo = "formaria um laço"
+				elif entradas(sim, atual).size() >= MAX_ENTRADAS:
+					motivo = "o PV de jusante já recebe %d trechos" % MAX_ENTRADAS
+				if motivo != "":
+					avisos.append("Polilinha %d, segmento %d: recusado (%s)." % [k + 1, j, motivo])
+					recusados += 1
+				else:
+					tid += 1
+					var t := trecho_padrao(db)
+					t["id"] = tid
+					t["nome"] = "T%d" % tid
+					t["ni"] = ant
+					t["nf"] = atual
+					t["coletor"] = nome_col
+					sim["trechos"].append(t)
+			ant = atual
+	var antes: int = sim["nodes"].size()
+	remover_orfaos(sim)
+	if sim["nodes"].size() < antes:
+		avisos.append("%d vértice(s) isolado(s) descartado(s)." % (antes - sim["nodes"].size()))
+	var lig := ligacoes(sim)
+	for n in sim["nodes"]:
+		var i := int(n["id"])
+		if lig["inc"].get(i, []).is_empty():
+			n["tipo"] = "TL"
+		elif lig["inc"][i].size() >= 2 and lig["out"].get(i, []).is_empty():
+			avisos.append("O nó em (%.2f; %.2f) recebe %d trechos e não tem saída: confira o sentido das polilinhas." % [float(n["e"]), float(n["n"]), lig["inc"][i].size()])
+	return {"nodes": sim["nodes"], "trechos": sim["trechos"], "avisos": avisos, "recusados": recusados}
 
 
 static func achar_no(proj: Dictionary, nome: String) -> Dictionary:

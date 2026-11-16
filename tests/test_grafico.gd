@@ -3,6 +3,8 @@ extends SceneTree
 ##   --fase=3 → T3-05: interferências visíveis na planta (pixels com a cor da camada)
 ##   --fase=4 → T4-05: exportação do perfil em PNG
 ##   --fase=5 → T5-07: tempo de redraw da planta com a rede grande
+##   --fase=6 → T6-08: colunas fixas desenhadas na planilha de resultados rolada para a direita
+##   --fase=7 → T7-01 / T7-02: círculo do raio de busca e marcador do osnap desenhados na planta
 
 const Lib = preload("lib.gd")
 const Net = preload("res://net.gd")
@@ -26,6 +28,10 @@ func _initialize() -> void:
 			await _t405()
 		"5":
 			await _t507()
+		"6":
+			await _t608()
+		"7":
+			await _t7()
 	quit(T.fim())
 
 
@@ -105,3 +111,121 @@ func _t507() -> void:
 		pior = maxi(pior, Time.get_ticks_msec() - t0)
 	T.dado(id, "redraw_ms", pior)
 	T.check(id, pior <= 3000, "redraw da planta com %d trechos: %d ms (limite 3000 ms)" % [m.proj["trechos"].size(), pior])
+
+
+func _t608() -> void:
+	var id := "T6-08"
+	m._do_action("exemplo")
+	root.size = Vector2i(1000, 700)
+	m._mostrar("planilhas")
+	m.sheets.current_tab = 4
+	await _frames(4)
+	var gt = m.tables["res"]
+	var hs = gt._scrollbars()[1]
+	hs.value = 400.0
+	await _frames(4)
+	var img := root.get_texture().get_image()
+	var o: Vector2 = gt._fixas.get_global_rect().position
+	var larg: float = gt.largura_fixas()
+	o.x += float(gt.fixas_info()["margem"])
+	var x := int(o.x + larg + 1.0)
+	var borda := 0
+	var total := 0
+	for y in range(int(o.y), int(o.y + gt._fixas.size.y) - 2, 2):
+		total += 1
+		if x < img.get_width() and _cor_perto(img.get_pixel(x, y), Color(0.35, 0.4, 0.5), 0.15):
+			borda += 1
+	T.check(id, total > 0 and borda >= total * 0.8, "borda da faixa fixa desenhada na tela (%d de %d pontos)" % [borda, total])
+	var escuros := 0
+	var claros := 0
+	var amostra := 0
+	for y in range(int(o.y) + 60, int(o.y + gt._fixas.size.y) - 2, 2):
+		for xx in range(int(o.x), int(o.x + larg), 2):
+			amostra += 1
+			var v := img.get_pixel(xx, y).v
+			if v < 0.35:
+				escuros += 1
+			elif v > 0.85:
+				claros += 1
+	T.check(id, amostra > 0 and claros >= amostra * 0.6, "células da faixa fixa com o fundo da planilha (%d%% de pixels claros)" % (100 * claros / maxi(amostra, 1)))
+	T.check(id, escuros > 40 and escuros < amostra * 0.25, "textos das colunas fixas visíveis por cima das colunas roladas (%d px escuros)" % escuros)
+	root.size = Vector2i(1366, 820)
+
+
+func _t7() -> void:
+	m._novo()
+	m.proj["area"] = {"e0": -100.0, "n0": -100.0, "le": 500.0, "ln": 300.0, "grid": 50.0}
+	var cs: Array = []
+	for k in range(-5, 16):
+		cs.append({"z": 100.0 + k, "pts": PackedVector2Array([Vector2(-100, 10.0 * k), Vector2(400, 10.0 * k)])})
+	m.topo.set_curvas(cs)
+	m.topo.set_pontos([Vector3(200.0, 33.0, 123.45)])
+	m.proj["topo"] = m.topo.to_dict()
+	m.opts.merge({"cota_modo": "int", "raio": 60.0, "osnap": true, "orto": false, "rastro": true, "topo_desenho": 0, "pontos_desenho": true}, true)
+	m._mostrar("tracado")
+	var p = m.plan
+	p.scale_px = 4.0
+	p.center = Vector2(100, 40)
+	var mv := InputEventMouseMotion.new()
+	mv.position = p.w2s(Vector2(60, 25))
+	p._gui_input(mv)
+	p._right_press(p.w2s(Vector2(0, 25)), false)
+	var img: Image
+	var o: Vector2 = p.get_global_rect().position
+	var centro: Vector2 = p.w2s(Vector2(60, 25))
+	var no_circulo := 0
+	var amostras := 0
+	# Um movimento real do mouse sobre a janela durante a captura tira o cursor
+	# do lugar; o movimento é reinjetado a cada tentativa (critério inalterado).
+	for tentativa in 3:
+		p._gui_input(mv)
+		await _frames(4)
+		img = root.get_texture().get_image()
+		no_circulo = _pontos_circulo(img, p, o, centro)
+		amostras = _amostras_circulo(p, o, centro)
+		if amostras > 10 and no_circulo >= amostras * 0.6:
+			break
+	T.check("T7-01", amostras > 10 and no_circulo >= amostras * 0.6, "círculo do raio de busca (60 m) desenhado em volta do cursor (%d de %d pontos)" % [no_circulo, amostras])
+	mv.position = p.w2s(Vector2(201.5, 33.5))
+	var pc: Vector2 = p.w2s(Vector2(200, 33)) + o
+	var verdes := 0
+	for tentativa in 3:
+		p._gui_input(mv)
+		await _frames(4)
+		img = root.get_texture().get_image()
+		verdes = 0
+		for dx in range(-9, 10):
+			for dy in range(-9, 10):
+				if _cor_perto(img.get_pixel(int(pc.x) + dx, int(pc.y) + dy), Color(0.0, 0.62, 0.2), 0.15):
+					verdes += 1
+		if verdes > 8:
+			break
+	T.check("T7-02", verdes > 8, "marcador verde do osnap desenhado sobre o ponto cotado (%d px)" % verdes)
+	p.cancelar()
+
+
+func _amostras_circulo(p, o: Vector2, centro: Vector2) -> int:
+	var n := 0
+	for k in 72:
+		var q: Vector2 = centro + Vector2(cos(TAU * k / 72.0), sin(TAU * k / 72.0)) * 240.0 + o
+		if not (q.x < o.x + 2 or q.y < o.y + 2 or q.x > o.x + p.size.x - 2 or q.y > o.y + p.size.y - 2):
+			n += 1
+	return n
+
+
+func _pontos_circulo(img: Image, p, o: Vector2, centro: Vector2) -> int:
+	var no_circulo := 0
+	for k in 72:
+		var a := TAU * k / 72.0
+		var q: Vector2 = centro + Vector2(cos(a), sin(a)) * 240.0 + o
+		if q.x < o.x + 2 or q.y < o.y + 2 or q.x > o.x + p.size.x - 2 or q.y > o.y + p.size.y - 2:
+			continue
+		var achou := false
+		for dx in [-1, 0, 1]:
+			for dy in [-1, 0, 1]:
+				var c := img.get_pixel(int(q.x) + dx, int(q.y) + dy)
+				if c.b > c.r + 0.2 and c.b > 0.6:
+					achou = true
+		if achou:
+			no_circulo += 1
+	return no_circulo

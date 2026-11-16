@@ -249,6 +249,73 @@ static func validar_rede(proj: Dictionary) -> Array:
 	return erros
 
 
+## Alertas da rede (advertências, não impedem o cálculo):
+##   • "isolado": trechos de uma parte da rede que não deságua na rede principal (a rede tem
+##     mais de um ponto final; a principal é a parte com mais trechos, depois a mais extensa);
+##   • "sem_caida": terreno sem caimento no sentido do escoamento (CT jusante ≥ CT montante).
+## Retorna [{tipo, trechos: [nomes], texto}].
+static func alertas_rede(proj: Dictionary) -> Array:
+	var out: Array = []
+	var nodes := Net.node_map(proj)
+	var trs: Array = proj.get("trechos", [])
+	if trs.is_empty():
+		return out
+	# partes conectadas (união-busca pelos nós)
+	var pai := {}
+	var achar := func(x: int) -> int:
+		while int(pai.get(x, x)) != x:
+			pai[x] = int(pai.get(int(pai[x]), int(pai[x])))
+			x = int(pai[x])
+		return x
+	for t in trs:
+		var a: int = achar.call(int(t["ni"]))
+		var b: int = achar.call(int(t["nf"]))
+		if a != b:
+			pai[a] = b
+	var partes := {}
+	for t in trs:
+		var r: int = achar.call(int(t["ni"]))
+		if not partes.has(r):
+			partes[r] = {"trechos": [], "ext": 0.0, "saida": -1}
+		partes[r]["trechos"].append(t)
+		partes[r]["ext"] = float(partes[r]["ext"]) + Net.comprimento(nodes, t)
+	if partes.size() > 1:
+		var lig := Net.ligacoes(proj)
+		for r in partes.keys():
+			for t in partes[r]["trechos"]:
+				if lig["out"].get(int(t["nf"]), []).is_empty():
+					partes[r]["saida"] = int(t["nf"])
+		var chaves: Array = partes.keys()
+		chaves.sort_custom(func(x, y):
+			var px: Dictionary = partes[x]
+			var py: Dictionary = partes[y]
+			if px["trechos"].size() != py["trechos"].size():
+				return px["trechos"].size() > py["trechos"].size()
+			return float(px["ext"]) > float(py["ext"]))
+		var principal: Dictionary = partes[chaves[0]]
+		var nome_saida := Net.nome_no(proj, int(principal["saida"]))
+		for k in range(1, chaves.size()):
+			var parte: Dictionary = partes[chaves[k]]
+			var nomes: Array = []
+			for t in parte["trechos"]:
+				nomes.append(str(t["nome"]))
+			out.append({"tipo": "isolado", "trechos": nomes, "texto":
+				"Trecho(s) isolado(s), sem deságue na rede principal: %s (termina no nó %s; a rede principal sai pelo nó %s). Ligue-o(s) à rede ou confira se é outra bacia." % [
+				", ".join(PackedStringArray(nomes)), Net.nome_no(proj, int(parte["saida"])), nome_saida]})
+	for t in trs:
+		var a = nodes.get(int(t["ni"]))
+		var b = nodes.get(int(t["nf"]))
+		if a == null or b == null:
+			continue
+		var cm := float(a["ct"])
+		var cj := float(b["ct"])
+		if cj >= cm:
+			out.append({"tipo": "sem_caida", "trechos": [str(t["nome"])], "texto":
+				"Trecho %s com terreno sem caimento: cota do terreno a jusante (%s m) %s a de montante (%s m). O coletor vai ficar mais profundo; confira as cotas ou o sentido." % [
+				t["nome"], _br(cj, 3), "igual" if is_equal_approx(cj, cm) else "maior que", _br(cm, 3)]})
+	return out
+
+
 # ------------------------------------------------------------------ dimensionamento
 
 static func taxas(p: Dictionary, ltot: float) -> Array:
@@ -371,6 +438,11 @@ static func calcular(proj: Dictionary, db: Dictionary, cota_fn: Callable) -> Dic
 		res["luz"] = "amarela"
 	else:
 		res["luz"] = "verde"
+	# alertas da rede (trecho isolado / terreno sem caimento): vão para a planilha de observações,
+	# mas não mudam o status dos trechos nem a luz, que continua refletindo só a hidráulica
+	res["alertas"] = alertas_rede(proj)
+	for al in res["alertas"]:
+		res["obs"].append([", ".join(PackedStringArray(al["trechos"])) if al["tipo"] == "sem_caida" else "Rede", "Alerta: " + str(al["texto"])])
 	return res
 
 
