@@ -46,6 +46,11 @@ const SPECS := {
 		{"t": "Custo (R$/un)", "k": "custo", "w": 110, "f": "f2", "edit": true}]},
 }
 
+## TIL de passagem (fase 8, pedido de 17/11/2026): peça de 1 entrada e 1 saída, DN 100 a 300.
+## Sigla de planta e custo provisórios (igual ao TIL radial) até a confirmação do engenheiro (Q1).
+const TIL_PASSAGEM := {"sigla": "TP", "sigla_imp": "TIL-P", "nome": "TIL de passagem", "custo": 98.00}
+const TIL_PASSAGEM_DN_MAX := 300.0
+
 const ORDEM := ["materiais", "tubos", "pvs", "pavimentos", "situacoes", "escoramentos", "reducoes", "acessorios"]
 
 # Larguras de vala para tubos de PVC (tabela do manual, item 6.2.2)
@@ -88,6 +93,7 @@ static func defaults() -> Dictionary:
 			{"sigla": "TQ", "sigla_imp": "TQ", "nome": "PV com tubo de queda", "custo": 137.60},
 			{"sigla": "TR", "sigla_imp": "TIL", "nome": "TIL radial rede VINILFORT", "custo": 98.00},
 			{"sigla": "TT", "sigla_imp": "TIL-TQ", "nome": "TIL tubo de queda VINILFORT", "custo": 112.00},
+			TIL_PASSAGEM.duplicate(),
 		],
 		"pavimentos": [
 			{"nome": "Asfáltico", "retirada": 5.16, "colocacao": 10.50},
@@ -159,7 +165,18 @@ static func carregar(path: String) -> Dictionary:
 	for k in ORDEM:
 		if data.has(k) and data[k] is Array:
 			base[k] = _normalizar(k, data[k])
+	completar(base)
 	return base
+
+
+## Itens novos do programa que um banco antigo não tem (ex.: TIL de passagem, fase 8).
+## Só acrescenta: o que o usuário editou não muda. Retorna as siglas acrescentadas.
+static func completar(db: Dictionary) -> Array:
+	var novos: Array = []
+	if not "TP" in nomes(db, "pvs", "sigla"):
+		db["pvs"].append(TIL_PASSAGEM.duplicate())
+		novos.append("TP")
+	return novos
 
 
 ## Identificação do banco para relatórios: arquivo, versão e hash do conteúdo.

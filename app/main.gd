@@ -16,11 +16,13 @@ const Registro = preload("res://registro.gd")
 const Cadastro = preload("res://cadastro.gd")
 const Geo = preload("res://geo.gd")
 const Gpkg = preload("res://gpkg.gd")
+const Atualizador = preload("res://atualizador.gd")
 
 const APP_NAME := "DimEsgoto"
-const VERSAO := "0.2.0-alpha"
+const VERSAO := "0.3.0-alpha.1"
 const CFG := "user://dimesgoto.cfg"
 const DB_PADRAO := "user://cesgcust.json"
+const PAGINA_RELEASES := "https://github.com/CESAM-LASANGE/Proj-Dimensionamento-Hidraulico/releases"
 
 # ------------------------------------------------------------------ planilhas (cap. 3 do manual)
 const SH_TRECHOS := [
@@ -142,6 +144,17 @@ var confirm_dialog: ConfirmationDialog
 var confirm_action := ""
 var apagar_dialog: ConfirmationDialog
 var apagar_pendente := {}
+## Pergunta do TL que passa a receber rede (SPEC-8.02): {de, ate}
+var tl_dialog: AcceptDialog
+var tl_pendente := {}
+## Atualização automática (fase 9, app/atualizador.gd)
+var atualizador
+var atu_info := {}
+var atu_pagina := ""
+var atu_pergunta: ConfirmationDialog
+var atu_fim: ConfirmationDialog
+var atu_erro: AcceptDialog
+var atu_timer: Timer
 var ultimo_alerta := ""
 var sheets_box: VBoxContainer
 var busca := ""
@@ -158,6 +171,8 @@ var frame_count := 0
 var arg_vista := ""
 var arg_aba := -1
 var arg_dialogo := ""
+## Ensaio da atualização (só diagnóstico, só servidor local): --ensaio-atualizacao=http://127.0.0.1:porta/releases.json
+var arg_ensaio_atu := ""
 
 
 func _ready() -> void:
@@ -165,6 +180,10 @@ func _ready() -> void:
 	registro.name = "Registro"
 	add_child(registro)
 	registro.iniciar(APP_NAME, VERSAO)
+	atualizador = Atualizador.new()
+	atualizador.name = "Atualizador"
+	atualizador.versao_atual = VERSAO
+	add_child(atualizador)
 	opts = _default_opts()
 	_carregar_config()
 	classic = bool(opts.get("classico", false))
@@ -197,6 +216,16 @@ func _ready() -> void:
 		registro.verificar_godot_log()
 	if arg_dialogo != "":
 		_abrir_dialogo_teste(arg_dialogo)
+	if OS.has_feature("template"):
+		var n: int = Atualizador.limpar_antigo(OS.get_executable_path())
+		if n > 0:
+			registro.acao("Atualização: sobras da versão anterior removidas")
+	if arg_ensaio_atu != "":
+		_ensaio_atualizacao()
+		return
+	if deve_verificar_ao_abrir():
+		await get_tree().create_timer(3.0).timeout
+		verificar_atualizacao(false)
 
 
 ## Só para diagnóstico (--simular-erro): provoca um erro de script de propósito.
@@ -230,6 +259,9 @@ func _abrir_dialogo_teste(qual: String) -> void:
 			dlg.abrir_area()
 		"registro":
 			dlg.abrir_registro()
+		"atualizacao":
+			_oferecer_atualizacao({"versao": "0.3.0-alpha.2", "teste": true, "item": {"tamanho": 34735620},
+				"notas": "## Novidades\n- Materiais sem marca: PVC, PVC corrugado e ferro fundido, com a tabela de diâmetros de cada um.\n- Numeração dos trechos no formato coletor/ordem (1/1, 1/2, 2/1…).\n- Redesenhar (Ctrl+R) limpa o rastro do cálculo de cota."})
 
 
 # ------------------------------------------------------------------ captura de tela (testes)
@@ -252,6 +284,8 @@ func _parse_args() -> void:
 			arg_dialogo = a.substr(10)
 		elif a == "--simular-erro":
 			arg_simular_erro = true
+		elif a.begins_with("--ensaio-atualizacao=") and a.substr(21).begins_with("http://127.0.0.1:"):
+			arg_ensaio_atu = a.substr(21)
 		elif a == "--classico":
 			classic = true
 	if shot_path != "" and shot_path.is_relative_path():
@@ -322,6 +356,9 @@ func on_changed(kind: String) -> void:
 	dirty = true
 	if kind != "visual":
 		resultados_atuais = false
+		# invariante da fase 8 (SPEC-8.03): nó de passagem com 2+ entradas é PV, venha a
+		# mudança do traçado, da janela do nó, da planilha ou de outra edição (mesmo passo de desfazer)
+		Net.ajustar_tipos(proj)
 	registro.acao("Alteração: " + str(ROTULOS_ACAO.get(kind, kind)))
 	_registrar(kind)
 	_update_title()
@@ -338,6 +375,167 @@ func on_marcados() -> void:
 	var nn: int = plan.sel_nos.size()
 	if n > 0 or nn > 0:
 		set_status("%d trecho(s) e %d nó(s) selecionado(s). Del apaga; Trechos › Divide / Desloca / Perfil usam os trechos." % [n, nn])
+
+
+# ------------------------------------------------------------------ atualização automática (fase 9)
+
+## Diagnóstico (tools/ensaio_atualizacao.py): verifica e instala sem perguntar, a partir de
+## um servidor local, com a mesma chave pública e as mesmas conferências do uso normal.
+func _ensaio_atualizacao() -> void:
+	atualizador.api_url = arg_ensaio_atu
+	var r: Dictionary = await atualizador.verificar()
+	var b := {}
+	if str(r.get("estado", "")) == "disponivel":
+		b = await atualizador.baixar_e_instalar(r)
+	print("ATUALIZACAO|%s|%s|%s|%s" % [VERSAO, r.get("estado", ""), r.get("versao", ""),
+		b.get("motivo", r.get("motivo", "")) if not b.get("ok", false) else "instalada"])
+	salvar_config()
+	get_tree().quit(0 if b.get("ok", false) or str(r.get("estado", "")) == "atualizado" else 1)
+
+
+## Só o programa exportado consulta a internet ao abrir (nunca nos testes nem pelo editor).
+func deve_verificar_ao_abrir() -> bool:
+	return OS.has_feature("template") and bool(opts.get("verificar_atualizacoes", true)) \
+		and shot_path == "" and arg_dialogo == "" and DisplayServer.get_name() != "headless"
+
+
+## Procura versão nova. `manual` (menu Ajuda) mostra também "já atualizado" e os erros;
+## a verificação ao abrir só se manifesta quando há versão nova.
+func verificar_atualizacao(manual: bool) -> Dictionary:
+	if atualizador.ocupado:
+		if manual:
+			set_status("A atualização já está em andamento.")
+		return {}
+	if manual:
+		set_status("Procurando versão nova…")
+	var r: Dictionary = await atualizador.verificar()
+	registro.acao("Atualização: verificação %s → %s %s" % ["manual" if manual else "ao abrir", r.get("estado", ""),
+		str(r.get("versao", r.get("motivo", "")))])
+	match str(r.get("estado", "")):
+		"disponivel":
+			_oferecer_atualizacao(r)
+		"atualizado":
+			if manual:
+				set_status("Você já está com a versão mais recente (%s)." % VERSAO)
+		_:
+			if manual:
+				_erro_atualizacao("Não foi possível verificar se há versão nova: %s." % r.get("motivo", "erro desconhecido"))
+	return r
+
+
+func _oferecer_atualizacao(r: Dictionary) -> void:
+	atu_info = r
+	var notas := _texto_simples(str(r.get("notas", "")))
+	# as notas costumam começar com o título "Novidades", que a janela já mostra
+	if notas.get_slice("\n", 0).strip_edges().trim_suffix(":").to_lower() == "novidades":
+		notas = notas.substr(notas.find("\n") + 1).strip_edges() if notas.contains("\n") else ""
+	if notas.length() > 900:
+		notas = notas.substr(0, 900) + "…"
+	var mb := float(r["item"]["tamanho"]) / 1048576.0
+	atu_pergunta.dialog_text = "Há uma versão nova do %s: %s%s (você está com a %s).\n\n%s%sO programa baixa a versão nova (%s MB), confere a assinatura e troca o executável.\nSeus projetos e configurações não são alterados." % [
+		APP_NAME, r["versao"], " — versão de teste" if bool(r.get("teste", false)) else "", VERSAO,
+		"Novidades:\n" if notas != "" else "", notas + "\n\n" if notas != "" else "", fmt(mb, 1)]
+	atu_pergunta.dialog_text = _quebrar_linhas(atu_pergunta.dialog_text, 78)
+	atu_pergunta.reset_size()
+	atu_pergunta.popup_centered()
+	set_status("Versão nova disponível: %s." % r["versao"])
+
+
+func instalar_atualizacao(info: Dictionary) -> Dictionary:
+	if info.is_empty():
+		return {}
+	atu_timer.start()
+	set_status("Baixando a versão %s…" % info.get("versao", ""))
+	var r: Dictionary = await atualizador.baixar_e_instalar(info)
+	atu_timer.stop()
+	registro.acao("Atualização: instalação da %s → %s %s" % [info.get("versao", ""), "ok" if r.get("ok") else "falhou", r.get("motivo", "")])
+	if r.get("ok", false):
+		set_status("Versão %s instalada. Ela vale a partir da próxima vez que o programa abrir." % info.get("versao", ""))
+		atu_fim.dialog_text = "A versão %s foi instalada.\n\nEla começa a valer quando o programa reiniciar. Se houver alterações não salvas, o programa pergunta antes." % info.get("versao", "")
+		atu_fim.dialog_text = _quebrar_linhas(atu_fim.dialog_text, 78)
+		atu_fim.reset_size()
+		atu_fim.popup_centered()
+	else:
+		_erro_atualizacao("A atualização para a versão %s não foi instalada: %s.\n\nO programa atual continua funcionando normalmente." % [info.get("versao", ""), r.get("motivo", "")], str(info.get("pagina", "")))
+	return r
+
+
+func _erro_atualizacao(texto: String, pagina := "") -> void:
+	atu_pagina = pagina if pagina.begins_with("https://github.com/") else PAGINA_RELEASES
+	set_status(texto.get_slice("\n", 0))
+	atu_erro.dialog_text = "%s\n\nVocê também pode baixar a versão nova à mão em:\n%s" % [texto, atu_pagina]
+	atu_erro.dialog_text = _quebrar_linhas(atu_erro.dialog_text, 78)
+	atu_erro.reset_size()
+	atu_erro.popup_centered()
+
+
+## Notas do release (Markdown do GitHub) em texto simples: sem #, **, ` e com • nas listas.
+static func _texto_simples(md: String) -> String:
+	var linhas: Array = []
+	for l in md.replace("\r", "").split("\n"):
+		var t := l.strip_edges()
+		while t.begins_with("#"):
+			t = t.substr(1).strip_edges()
+		if t.begins_with("- ") or t.begins_with("* "):
+			t = "• " + t.substr(2)
+		linhas.append(t.replace("**", "").replace("`", ""))
+	return "\n".join(PackedStringArray(linhas)).strip_edges()
+
+
+## Quebra cada linha em até `largura` caracteres, nas palavras (as janelas não ficam largas demais).
+static func _quebrar_linhas(txt: String, largura: int) -> String:
+	var saida: Array = []
+	for linha in txt.split("\n"):
+		var atual := ""
+		for palavra in linha.split(" "):
+			if atual != "" and atual.length() + 1 + palavra.length() > largura:
+				saida.append(atual)
+				atual = palavra
+			else:
+				atual = palavra if atual == "" else atual + " " + palavra
+		saida.append(atual)
+	return "\n".join(PackedStringArray(saida))
+
+
+func _progresso_atualizacao() -> void:
+	var p: Vector2i = atualizador.progresso()
+	if p.x < 0:
+		return
+	if p.y > 0:
+		set_status("Baixando a versão %s… %d%% (%s de %s MB)" % [atu_info.get("versao", ""), int(100.0 * p.x / p.y),
+			fmt(p.x / 1048576.0, 1), fmt(p.y / 1048576.0, 1)])
+	else:
+		set_status("Baixando a versão %s… %s MB" % [atu_info.get("versao", ""), fmt(p.x / 1048576.0, 1)])
+
+
+## Ligação de um trecho num TL de início de rede: pergunta o novo tipo do nó (PV, PI ou
+## TIL de passagem). A ligação só é feita depois da escolha; Cancelar mantém o traçado.
+func perguntar_tipo_tl(de: int, ate: int) -> void:
+	tl_pendente = {"de": de, "ate": ate}
+	var nome := Net.nome_no(proj, ate)
+	tl_dialog.dialog_text = "O TL %s é início de rede e vai passar a receber este trecho.\n\nTransformar o TL %s em:" % [nome, nome]
+	registro.acao("Pergunta: tipo do TL %s que recebe rede" % nome)
+	set_status("Escolha o novo tipo do TL %s: PV, PI ou TIL de passagem." % nome)
+	tl_dialog.popup_centered()
+
+
+func escolher_tipo_tl(tipo: String) -> bool:
+	var pend := tl_pendente
+	tl_pendente = {}
+	if tl_dialog.visible:
+		tl_dialog.hide()
+	if pend.is_empty() or plan.trace_from != int(pend["de"]):
+		return false
+	return plan.concluir_ligacao(int(pend["ate"]), tipo)
+
+
+func cancelar_tipo_tl() -> void:
+	if tl_pendente.is_empty():
+		return
+	tl_pendente = {}
+	if tl_dialog.visible:
+		tl_dialog.hide()
+	set_status("Ligação cancelada: o TL continua como estava. O traçado continua; botão 2 finaliza.")
 
 
 ## Alerta ao usuário (janela) para regras da rede que impedem a ação.
@@ -489,6 +687,7 @@ func _default_opts() -> Dictionary:
 		"exp_rede": true, "exp_ruas": true, "exp_topo": true, "exp_malha": true, "exp_margem": true, "exp_pontos": true, "exp_escala": 1000.0,
 		"cota_modo": "int", "raio": 100.0, "precisao": 3, "rastro": true, "raio_pontos": 100.0,
 		"grava_res": true, "prefixo": "CESG", "res_num": 0, "data_dir": "", "db_path": "", "classico": false, "recentes": [],
+		"verificar_atualizacoes": true,
 	}
 
 
@@ -611,6 +810,41 @@ func _build_ui() -> void:
 		apagar_pendente = {}
 		set_status("Nada foi apagado."))
 	add_child(apagar_dialog)
+	tl_dialog = AcceptDialog.new()
+	tl_dialog.name = "PerguntaTipoTL"
+	tl_dialog.title = "TL passa a receber rede"
+	tl_dialog.ok_button_text = str(Net.OPCOES_TL[0][1])
+	for o in Net.OPCOES_TL.slice(1):
+		tl_dialog.add_button(str(o[1]), false, str(o[0]))
+	tl_dialog.add_cancel_button("Cancelar")
+	tl_dialog.confirmed.connect(func(): escolher_tipo_tl(str(Net.OPCOES_TL[0][0])))
+	tl_dialog.custom_action.connect(func(acao): escolher_tipo_tl(str(acao)))
+	tl_dialog.canceled.connect(cancelar_tipo_tl)
+	add_child(tl_dialog)
+	atu_pergunta = ConfirmationDialog.new()
+	atu_pergunta.name = "PerguntaAtualizacao"
+	atu_pergunta.title = "Nova versão disponível"
+	atu_pergunta.ok_button_text = "Atualizar agora"
+	atu_pergunta.cancel_button_text = "Depois"
+	atu_pergunta.confirmed.connect(func(): instalar_atualizacao(atu_info))
+	add_child(atu_pergunta)
+	atu_fim = ConfirmationDialog.new()
+	atu_fim.name = "AtualizacaoInstalada"
+	atu_fim.title = "Atualização instalada"
+	atu_fim.ok_button_text = "Reiniciar agora"
+	atu_fim.cancel_button_text = "Depois"
+	atu_fim.confirmed.connect(func(): _ask_discard("reiniciar"))
+	add_child(atu_fim)
+	atu_erro = AcceptDialog.new()
+	atu_erro.name = "AtualizacaoErro"
+	atu_erro.title = "Atualização"
+	atu_erro.add_button("Abrir a página de downloads", true, "pagina")
+	atu_erro.custom_action.connect(func(_a): OS.shell_open(atu_pagina); atu_erro.hide())
+	add_child(atu_erro)
+	atu_timer = Timer.new()
+	atu_timer.wait_time = 0.5
+	atu_timer.timeout.connect(_progresso_atualizacao)
+	add_child(atu_timer)
 
 
 func _menu(mb: MenuBar, titulo: String, itens: Array) -> PopupMenu:
@@ -652,7 +886,7 @@ func _build_menu() -> Control:
 			["Importa bacias (GeoJSON)…", 92], ["Balanço de contribuições…", 97], [],
 			["Importa interferências (GeoJSON)…", 93], ["Exporta interferências (GeoJSON)…", 94], [],
 			["Exporta rede (GeoJSON)…", 95], ["Importa rede (GeoJSON)…", 96], ["Exporta rede (GeoPackage)…", 99]]], [],
-		["Salva", 7, KEY_F2], ["Salva como…", 8], ["Exporta planta para DXF…", 9], ["Exporta planilha…", 10], ["Exporta todas as planilhas (XLSX)…", 18],
+		["Salva", 7, KEY_F2], ["Salva como…", 8], ["Exporta planta para DXF…", 9], ["Exporta traçado para DXF (sem resultados)…", 29], ["Exporta planilha…", 10], ["Exporta todas as planilhas (XLSX)…", 18],
 		["Exporta memorial de cálculo (TXT/PDF)…", 11], [],
 		["Imprimir", 12], ["Visualizar impressão de planilha", 13], [],
 		["sub", "Parâmetros", [["Diretório de dados…", 14], ["Banco de itens de custo…", 15], ["Usar banco padrão", 17]]],
@@ -677,7 +911,9 @@ func _build_menu() -> Control:
 	_menu(mb, "Trechos", [
 		["Apaga seleção", 50, KEY_DELETE], ["Desfaz seleção", 51], ["Seleciona tudo", 55], ["Desloca trecho", 52], ["Divide trecho", 53], [], ["Perfil", 54]])
 	_menu(mb, "Banco de dados", [["Itens de custo, materiais e tubos…", 60]])
-	_menu(mb, "Ajuda", [["Conteúdo", 70, KEY_F1], ["Como usar?", 71], ["Créditos", 72], [], ["Registro de erros…", 73]])
+	_menu(mb, "Ajuda", [["Conteúdo", 70, KEY_F1], ["Como usar?", 71], ["Créditos", 72], [], ["Registro de erros…", 73], [],
+		["Verificar atualizações…", 74], ["chk", "Verificar atualizações ao abrir", 75]])
+	menus["Ajuda"].set_item_checked(menus["Ajuda"].get_item_index(75), bool(opts.get("verificar_atualizacoes", true)))
 	var pm: PopupMenu = menus["Opções"]
 	var sub: PopupMenu = menus["Resultados"]
 	sub.set_item_checked(sub.get_item_index(24), bool(opts.get("grava_res", true)))
@@ -1012,12 +1248,19 @@ func executar_calculo(gravar := true) -> Dictionary:
 func texto_alertas(alertas: Array, max_itens := 12) -> String:
 	var iso: Array = []
 	var sc: Array = []
+	var tl: Array = []
 	for a in alertas:
-		if str(a["tipo"]) == "isolado":
-			iso.append("• " + str(a["texto"]))
-		else:
-			sc.append("• " + str(a["texto"]))
+		match str(a["tipo"]):
+			"isolado":
+				iso.append("• " + str(a["texto"]))
+			"tl_meio":
+				tl.append("• " + str(a["texto"]))
+			_:
+				sc.append("• " + str(a["texto"]))
 	var partes: Array = []
+	if not tl.is_empty():
+		partes.append("TL NO MEIO DA REDE (%d):\n%s" % [tl.size(), "\n".join(PackedStringArray(tl.slice(0, max_itens)))]
+			+ ("\n  … e mais %d" % (tl.size() - max_itens) if tl.size() > max_itens else ""))
 	if not iso.is_empty():
 		partes.append("TRECHOS ISOLADOS, SEM DESÁGUE NA REDE PRINCIPAL (%d):\n%s" % [iso.size(), "\n".join(PackedStringArray(iso.slice(0, max_itens)))]
 			+ ("\n  … e mais %d" % (iso.size() - max_itens) if iso.size() > max_itens else ""))
@@ -1060,8 +1303,31 @@ func motivo_bloqueio() -> String:
 	if not resultados_atuais:
 		return "os resultados estão desatualizados (o projeto mudou depois do cálculo) — dimensione novamente com Ctrl+D"
 	if not bool(results.get("aprovado", false)):
-		return "o resultado não está aprovado: há restrições impeditivas (ver Planilha de Observações)"
+		var imp := trechos_impeditivos()
+		if imp.is_empty():
+			return "o resultado não está aprovado: há restrições impeditivas (ver Planilha de Observações)"
+		return "o resultado não está aprovado. Restrições impeditivas: %s%s. Corrija e dimensione de novo (Ctrl+D); detalhes na Planilha de Observações" % [
+			"; ".join(PackedStringArray(imp.slice(0, 4))), " (e mais %d trecho(s))" % (imp.size() - 4) if imp.size() > 4 else ""]
 	return ""
+
+
+## Trechos com restrição impeditiva (status 2) e o motivo, para o aviso de bloqueio (SPEC-8.05):
+## ["T4: lâmina inicial y/D = 1,00 maior que o limite de 0,75 …", …]
+func trechos_impeditivos() -> Array:
+	var out: Array = []
+	var linhas: Array = results.get("rows", {}).values()
+	linhas.sort_custom(func(a, b): return int(a["id"]) < int(b["id"]))
+	for r in linhas:
+		if int(r.get("status", 0)) < 2:
+			continue
+		var motivo := ""
+		for o in r.get("obs", []):
+			if str(o).begins_with("Verifique") and (str(o).contains("lâmina") or str(o).contains("nula") or str(o).contains("negativa") or motivo == ""):
+				motivo = str(o).trim_prefix("Verifique: ").trim_suffix(".")
+				if str(o).contains("lâmina"):
+					break
+		out.append("%s: %s" % [str(r["nome"]), motivo if motivo != "" else "restrição impeditiva"])
+	return out
 
 
 func _bloqueio(oque: String) -> Dictionary:
@@ -1069,8 +1335,10 @@ func _bloqueio(oque: String) -> Dictionary:
 	if m == "":
 		return {}
 	var msg := "Exportação de %s bloqueada: %s." % [oque, m]
-	set_status(msg)
-	registro.aviso(msg)
+	if oque.begins_with("planta"):
+		msg += "\n\nPara exportar só o traçado, sem resultados, use Arquivos › Exporta traçado para DXF (sem resultados)."
+	set_status(msg.get_slice("\n", 0))
+	registro.aviso(msg.replace("\n\n", " "))
 	return {"ok": false, "motivo": msg}
 
 
@@ -1420,6 +1688,8 @@ func _on_menu(id: int) -> void:
 		9:
 			if not _avisar_bloqueio("planta DXF com resultados"):
 				dlg.abrir_exibicao_dxf(3, _exportar_planta)
+		29:
+			dlg.abrir_exibicao_dxf(3, _exportar_tracado)
 		10:
 			_exportar_planilha()
 		11:
@@ -1566,6 +1836,13 @@ func _on_menu(id: int) -> void:
 			dlg.abrir_ajuda("como")
 		73:
 			dlg.abrir_registro()
+		74:
+			verificar_atualizacao(true)
+		75:
+			opts["verificar_atualizacoes"] = not bool(opts.get("verificar_atualizacoes", true))
+			menus["Ajuda"].set_item_checked(menus["Ajuda"].get_item_index(75), bool(opts["verificar_atualizacoes"]))
+			salvar_config()
+			set_status("Verificação de atualizações ao abrir %s." % ["ligada" if opts["verificar_atualizacoes"] else "desligada"])
 		72:
 			dlg.mensagem("Créditos", "%s %s\n\nProjeto de redes de esgoto sanitário: traçado gráfico com topografia DXF,\nplanilhas, dimensionamento (NBR 9649, Manning ou Fórmula Universal),\nquantitativos, orçamento, perfis e exportação DXF.\n\nVersão modernizada inspirada no CEsg (FCTH)." % [APP_NAME, VERSAO])
 
@@ -1602,6 +1879,27 @@ func exportar_perfil_png(rows: Array, titulo: String, path: String, grid_modo :=
 
 func _exportar_planta() -> void:
 	pedir_arquivo("salvar", ["*.dxf ; Desenho DXF"], _safe_name() + "-planta.dxf", exportar_planta)
+
+
+func _exportar_tracado() -> void:
+	pedir_arquivo("salvar", ["*.dxf ; Desenho DXF"], _safe_name() + "-tracado.dxf", exportar_tracado)
+
+
+const NOTA_TRACADO := "TRAÇADO SEM RESULTADOS DE DIMENSIONAMENTO (não é planta final)"
+
+
+## Planta só do traçado (nós, trechos, nomes e extensões), sem diâmetros, cotas de coletor
+## nem identificador de resultado. Sempre disponível: não é exportação de resultado final
+## (EVAL-104 continua valendo para a planta com resultados). Fase 8, SPEC-8.05.
+func exportar_tracado(path: String) -> Dictionary:
+	if proj["trechos"].is_empty():
+		set_status("Não há trechos para exportar.")
+		return {"ok": false, "motivo": "não há trechos"}
+	var ok := gravar_texto(path, Report.dxf_planta(proj, {}, topo, opts, db, "", NOTA_TRACADO))
+	if ok:
+		set_status("Traçado exportado (sem resultados): " + path)
+		registro.acao("Exportação do traçado (DXF, sem resultados): " + path)
+	return {"ok": ok, "motivo": "" if ok else "falha ao gravar " + path}
 
 
 func _exportar_memorial(path: String) -> void:
@@ -1692,9 +1990,12 @@ func importar_rede_geojson(path: String) -> Dictionary:
 		dlg.mensagem("Rede GeoJSON", str(r["erro"]))
 		registro.aviso("Importação de rede GeoJSON falhou (%s): %s" % [path, r["erro"]])
 		return r
+	var conv := Net.ajustar_tipos(r["proj"])
 	_set_projeto(r["proj"], "")
 	plan.ajuste_maximo()
-	set_status("Rede importada de %s: %d nós e %d trechos." % [path.get_file(), proj["nodes"].size(), proj["trechos"].size()])
+	set_status("Rede importada de %s: %d nós e %d trechos.%s" % [path.get_file(), proj["nodes"].size(), proj["trechos"].size(),
+		" %d nó(s) com 2 ou mais entradas passaram a PV." % conv.size() if not conv.is_empty() else ""])
+	r["convertidos"] = conv
 	return r
 
 
@@ -2020,6 +2321,11 @@ func _do_action(action: String) -> void:
 		"fim":
 			salvar_config()
 			get_tree().quit()
+		"reiniciar":
+			salvar_config()
+			registro.acao("Atualização: reiniciando na versão nova")
+			OS.create_process(OS.get_executable_path(), [])
+			get_tree().quit()
 
 
 func _novo() -> void:
@@ -2215,12 +2521,26 @@ func _load_from(path: String) -> bool:
 	else:
 		p = Net.migrar_v2(data, Calc.default_params(), db)
 		msg = "Projeto da versão anterior convertido. As extensões foram mantidas (Fixa Ext.); a planta é esquemática — ajuste os nós se quiser."
+	# regras de tipo da fase 8: nó de passagem com 2+ entradas é PV (SPEC-8.03)
+	var conv := Net.ajustar_tipos(p)
+	if not conv.is_empty():
+		var nomes: Array = []
+		for c in conv:
+			nomes.append("%s (era %s)" % [str(c["nome"]), str(c["de"])])
+		msg += " — %d nó(s) com 2 ou mais entradas passaram a PV: %s." % [conv.size(), ", ".join(PackedStringArray(nomes))]
+		registro.aviso("Ao abrir %s: nós convertidos em PV por terem 2+ entradas: %s" % [path, ", ".join(PackedStringArray(nomes))])
+	var meio := Net.tls_no_meio(p)
+	if not meio.is_empty():
+		msg += " — %d TL(s) recebem rede: escolha o tipo na janela do nó (ver alertas ao dimensionar)." % meio.size()
 	_set_projeto(p, path)
 	set_status(msg)
 	if data.get("banco") is Dictionary:
 		_restaurar_banco(data["banco"])
 	if data.get("resultados") is Dictionary:
 		_restaurar_resultados(data["resultados"])
+		if not conv.is_empty():
+			resultados_atuais = false
+			_atualizar_stale()
 	_lembrar_recente(path)
 	plan.ajuste_maximo()
 	return true

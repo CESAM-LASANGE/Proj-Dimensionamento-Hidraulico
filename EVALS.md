@@ -379,6 +379,54 @@ O magnetismo captura PVs, pontos cotados, vértices de ruas, curvas e ruas, com 
 
 Trecho isolado (sem deságue na rede principal) e terreno sem caimento geram alerta ao calcular, sem bloquear o resultado e sem alterar o status hidráulico dos trechos (T7-04).
 
+## Fase 8 — pedidos do engenheiro de 17/11/2026
+
+Prioridade: P1. Pedidos por áudio do engenheiro responsável. Planejamento em [docs/fase-8/](<docs/fase-8/README.md>), casos concretos em [tests/PHASE-8.md](<tests/PHASE-8.md>), IDs `T8-*`. Os itens de regra de negócio sem resposta do engenheiro usam padrões provisórios, registrados em `tests/DECISOES.md`.
+
+### EVAL-801 — lâmina máxima com as duas vazões
+
+O diâmetro mantém y/D ≤ 0,75 (ou 0,50 acima da velocidade crítica) com a vazão de início e a de fim de plano. Antes, com início maior que fim, o cálculo aprovava tubo cheio. Motor 3.2. Os casos com início ≤ fim ficam idênticos (T8-01).
+
+### EVAL-802 — conversão do TL e PV automático
+
+Ligar um trecho num TL de início de rede pergunta o novo tipo (PV, PI ou TIL de passagem). Um nó de passagem com 2 ou mais entradas vira PV, sem mensagem. A regra está no domínio e vale para traçado, edição, importação e projetos antigos (T8-02, T8-03).
+
+### EVAL-803 — TIL de passagem
+
+Órgão acessório novo, no banco, na planta, no DXF, no orçamento e nas exportações, com advertência acima de DN 300 (T8-04).
+
+### EVAL-804 — exportação da planta e do traçado
+
+O aviso de bloqueio diz quais trechos impedem e por quê. O traçado, sem resultados, pode ser exportado a qualquer momento (T8-05).
+
+### EVAL-805 — comprimento ao traçar
+
+A extensão aparece em vermelho junto ao trecho logo depois de traçar (T8-08).
+
+### EVAL-806 a 808 — pendentes de resposta do engenheiro
+
+Materiais sem marca (T8-06), numeração coletor/trecho (T8-07), redesenhar (T8-09) e formato do projeto (T8-10).
+
+## Fase 9 — atualização automática
+
+Prioridade: P1. O programa instalado se atualiza pelos Releases do GitHub, perguntando antes. Casos concretos em [tests/PHASE-9.md](<tests/PHASE-9.md>), IDs `T9-*`; funcionamento e publicação em [docs/ATUALIZACAO.md](<docs/ATUALIZACAO.md>).
+
+### EVAL-901 — só instala o que foi assinado por quem publica
+
+O manifesto do release é conferido com a chave pública embutida, e o pacote com o tamanho e o SHA-256 do manifesto. Manifesto alterado, outra chave, outra versão, versão antiga, pacote adulterado: tudo é recusado, e o executável atual fica intacto (T9-03, T9-04, T9-05).
+
+### EVAL-902 — escolhe a versão certa
+
+A maior versão SemVer acima da instalada, com pré-lançamentos em ordem (alpha.2 < alpha.10 < beta < final), sem rascunhos e nunca para trás (T9-01, T9-02).
+
+### EVAL-903 — o usuário decide e nada se perde
+
+A janela mostra a versão nova, a atual e as novidades. Nada é baixado sem "Atualizar agora", e reiniciar passa pela pergunta de alterações não salvas. Os erros mostram o motivo e o link para baixar à mão. A busca ao abrir pode ser desligada (T9-06).
+
+### EVAL-904 — o pacote publicado funciona
+
+O manifesto em `dist/` confere com a chave do programa (T9-07). O ensaio com os executáveis exportados (`tools/ensaio_atualizacao.py`) mostra a versão instalada trocando a si mesma, abrindo na versão nova e recusando o pacote adulterado.
+
 ---
 
 ## Portão de aprovação para o agente de código
@@ -409,4 +457,6 @@ Fase 5: robustez e funcionalidades extras
 Fase 6: edição da rede, planilhas e intercâmbio (DXF / GeoPackage)
     ↓
 Fase 7: traçado assistido (raio de busca, osnap, orto) e alertas de cálculo
+    ↓
+Fase 8: pedidos do engenheiro (conversão do TL, lâmina, numeração, materiais…)
 ```

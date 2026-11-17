@@ -2,7 +2,7 @@
 
 **Projeto e dimensionamento de redes coletoras de esgoto sanitário** — traçado gráfico sobre topografia, cálculo hidráulico pelos critérios da NBR 9649, planilhas, orçamento, perfis e exportação para CAD.
 
-> ⚠️ **Versão alpha (0.2.0-alpha).** Feita para avaliação. Os resultados devem ser conferidos por um responsável técnico e validados contra a norma vigente e as exigências da concessionária antes de qualquer uso em projeto real.
+> ⚠️ **Versão alpha (0.3.0-alpha.1, versão de teste).** Feita para avaliação. Os resultados devem ser conferidos por um responsável técnico e validados contra a norma vigente e as exigências da concessionária antes de qualquer uso em projeto real.
 
 ![Planta com a rede de exemplo dimensionada](docs/planta.png)
 
@@ -12,18 +12,21 @@ Baixe a última versão na página de [**Releases**](../../releases):
 
 | Sistema | Arquivo | Como abrir |
 |---|---|---|
-| Windows 10/11 (64 bits) | `DimEsgoto-0.2.0-alpha-windows-x86_64.zip` | Extraia e abra `DimEsgoto.exe` |
-| Linux (64 bits) | `DimEsgoto-0.2.0-alpha-linux-x86_64.zip` | Extraia e execute `./DimEsgoto.x86_64` |
+| Windows 10/11 (64 bits) | `DimEsgoto-0.3.0-alpha.1-windows-x86_64.zip` | Extraia e abra `DimEsgoto.exe` |
+| Linux (64 bits) | `DimEsgoto-0.3.0-alpha.1-linux-x86_64.zip` | Extraia e execute `./DimEsgoto.x86_64` |
 
 Não precisa instalar nada. No Windows, como o executável ainda não é assinado, o SmartScreen pode avisar "editor desconhecido": clique em **Mais informações › Executar assim mesmo**.
 
 Ao abrir, uma rede de exemplo já vem carregada e dimensionada. Aperte **F1** para ver os comandos.
+
+**Atualizações.** A partir da 0.3.0-alpha.1, o programa avisa quando sai versão nova e se atualiza sozinho, sempre perguntando antes (Ajuda › Verificar atualizações…). Extraia o zip numa pasta onde você possa gravar, como Documentos ou Área de Trabalho. Quem está na 0.1.0 ou na 0.2.0 instala a 0.3.0-alpha.1 à mão uma última vez. Detalhes em [docs/ATUALIZACAO.md](docs/ATUALIZACAO.md).
 
 ## O que ele faz
 
 **Traçado da rede**
 - Área de trabalho estilo CAD. Botão direito inicia e termina um coletor, botão esquerdo cria os PVs, Shift continua o traçado e Ctrl marca trechos.
 - Seleção por caixa (arrastar na área vazia) e exclusão com confirmação. As regras da rede são aplicadas na edição: um afluente só se liga a um PV com saída, cada PV aceita no máximo 3 entradas e nenhum trecho fica sem saída.
+- Ao ligar um trecho num TL de início de rede, o programa pergunta se ele vira PV, poço de inspeção ou TIL de passagem; nó com 2 ou mais entradas vira PV sozinho. A extensão de cada trecho aparece em vermelho logo depois de traçar.
 - Importação da rede a partir de DXF (linhas e polilinhas).
 - Osnap (F10) com magnetismo em PVs, pontos cotados, ruas e curvas; orto (F9); raio de busca da interpolação visível no cursor durante o traçado.
 - Topografia em DXF (curvas de nível, ruas e pontos cotados, ASCII ou binário), com cota automática dos nós.
@@ -42,7 +45,7 @@ Ao abrir, uma rede de exemplo já vem carregada e dimensionada. Aperte **F1** pa
 **Entregáveis**
 - Planilhas de trechos, nós, dimensionamento, quantitativos, resultados, orçamento e observações, exportáveis em CSV, XLSX, HTML e PDF (a aba atual ou todas numa pasta XLSX), com as colunas de identificação fixas ao rolar.
 - Memorial de cálculo (TXT/PDF) com identificador de rastreabilidade do resultado.
-- Planta e perfil longitudinal em DXF; perfil também em PNG.
+- Planta e perfil longitudinal em DXF; perfil também em PNG. O traçado, sem resultados, pode ser exportado em DXF a qualquer momento.
 - Banco editável de materiais, tubos, PVs, pavimentos, escoramentos, reduções e acessórios.
 
 ![Perfil longitudinal](docs/perfil.png)
@@ -67,7 +70,7 @@ godot -e --path app
 
 ## Testes
 
-Os casos de avaliação estão em [EVALS.md](EVALS.md), [tests/PHASE-2-5.md](tests/PHASE-2-5.md), [tests/PHASE-6.md](tests/PHASE-6.md) e [tests/PHASE-7.md](tests/PHASE-7.md). O runner executa as fases em ordem e para na primeira que falhar:
+Os casos de avaliação estão em [EVALS.md](EVALS.md), [tests/PHASE-2-5.md](tests/PHASE-2-5.md), [tests/PHASE-6.md](tests/PHASE-6.md), [tests/PHASE-7.md](tests/PHASE-7.md), [tests/PHASE-8.md](tests/PHASE-8.md) e [tests/PHASE-9.md](tests/PHASE-9.md). O runner executa as fases em ordem e para na primeira que falhar:
 
 ```bash
 python3 tests/run_tests.py                 # todas as fases (abre uma janela por alguns segundos nos testes visuais)
@@ -82,8 +85,11 @@ O relatório sai em `tests/report/`. As decisões técnicas adotadas estão em [
 Com os [modelos de exportação do Godot 4.4.1](https://github.com/godotengine/godot/releases/tag/4.4.1-stable) instalados:
 
 ```bash
-python3 tools/build_release.py   # gera dist/DimEsgoto-<versão>-windows-x86_64.zip e -linux-x86_64.zip
+python3 tools/build_release.py        # gera dist/v<versão>/: zips de Windows e Linux, SHA256SUMS.txt e o manifesto assinado da atualização
+python3 tools/ensaio_atualizacao.py   # ensaio: o executável exportado se atualiza sozinho a partir de um servidor local
 ```
+
+A assinatura usa a chave privada de `~/.config/dimesgoto/chave-atualizacao.pem`, que fica fora do repositório. O passo a passo da publicação está em [docs/ATUALIZACAO.md](docs/ATUALIZACAO.md).
 
 ## Estrutura
 

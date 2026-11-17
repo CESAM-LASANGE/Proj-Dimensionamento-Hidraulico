@@ -1,5 +1,32 @@
 # Notas de versão
 
+## 0.3.0-alpha.1 — versão de teste: conversão do TL, lâmina e atualização automática
+
+Primeira versão de teste com os pedidos do engenheiro de 17/11/2026 (onda A da fase 8) e a primeira com atualização automática. Texto do release: [docs/NOTAS-v0.3.0-alpha.1.md](docs/NOTAS-v0.3.0-alpha.1.md).
+
+### Atualização automática
+- O programa instalado procura versão nova no GitHub ao abrir e pergunta antes de instalar. Ele baixa, confere a assinatura e o SHA-256 e troca o executável. A versão nova vale a partir da próxima abertura. Ajuda › Verificar atualizações… procura na hora, e Ajuda › Verificar atualizações ao abrir liga ou desliga a busca. Detalhes em [docs/ATUALIZACAO.md](docs/ATUALIZACAO.md).
+- Quem está na 0.1.0 ou na 0.2.0 instala esta versão à mão uma última vez.
+- Cada release passa a trazer `dimesgoto-atualizacao.json` e `.sig` (manifesto assinado), gerados pelo `tools/build_release.py`.
+
+### Cálculo
+- **Correção:** a lâmina máxima (75%, ou 50% acima da velocidade crítica) passa a ser conferida também com a vazão de início de plano quando ela é maior que a de fim. Antes, nesse caso, o programa podia aprovar um tubo trabalhando cheio. Projetos com vazão de início maior que a de fim podem ganhar diâmetros maiores ao serem dimensionados de novo. Os demais resultados não mudam (motor 3.2).
+
+### Rede
+- Ao ligar um trecho num TL de início de rede, o programa pergunta se ele passa a ser poço de visita (PV), poço de inspeção (PI) ou TIL de passagem.
+- Um nó que passa a receber 2 ou 3 trechos vira PV automaticamente, sem mensagem. Projetos antigos com TL recebendo 2 ou mais trechos são corrigidos ao abrir. TL antigo recebendo um trecho aparece nos alertas ao dimensionar.
+- Novo órgão acessório: TIL de passagem (sigla TIL-P), com símbolo próprio na planta e no DXF, no orçamento e com aviso acima de DN 300.
+- A extensão do trecho aparece em vermelho junto a ele logo depois de traçar.
+- A opção passou a se chamar "Numeração automática de PVs e trechos".
+
+### Exportação
+- Arquivos › Exporta traçado para DXF (sem resultados): o traçado pode ser exportado a qualquer momento, mesmo sem dimensionamento aprovado.
+- O aviso de exportação bloqueada diz quais trechos impedem e por quê.
+
+### Testes
+- Fase 8 (`tests/PHASE-8.md`): T8-01 a T8-05 e T8-08 aprovados; T8-06, T8-07, T8-09 e T8-10 aguardam respostas do engenheiro.
+- Fase 9 (`tests/PHASE-9.md`): atualização automática, T9-01 a T9-08, com um servidor HTTP local no runner. Há também o ensaio com os executáveis exportados (`tools/ensaio_atualizacao.py`).
+
 ## 0.2.0-alpha — edição segura da rede, traçado assistido e intercâmbio DXF/GeoPackage
 
 Segunda versão para avaliação. Resumo para quem usa o programa: [docs/MUDANCAS-DESDE-0.1.0.md](docs/MUDANCAS-DESDE-0.1.0.md).

@@ -5,6 +5,8 @@ extends SceneTree
 ##   --fase=5 → T5-07: tempo de redraw da planta com a rede grande
 ##   --fase=6 → T6-08: colunas fixas desenhadas na planilha de resultados rolada para a direita
 ##   --fase=7 → T7-01 / T7-02: círculo do raio de busca e marcador do osnap desenhados na planta
+##   --fase=8 → T8-02: o símbolo do TL muda na tela logo depois da escolha do novo tipo
+##              T8-08: extensão do trecho em vermelho, junto ao trecho, antes de dimensionar
 
 const Lib = preload("lib.gd")
 const Net = preload("res://net.gd")
@@ -32,6 +34,8 @@ func _initialize() -> void:
 			await _t608()
 		"7":
 			await _t7()
+		"8":
+			await _t8()
 	quit(T.fim())
 
 
@@ -229,3 +233,73 @@ func _pontos_circulo(img: Image, p, o: Vector2, centro: Vector2) -> int:
 		if achou:
 			no_circulo += 1
 	return no_circulo
+
+
+## Pixels do símbolo de um nó (quadrado de 8 px em volta do centro) numa captura.
+func _patch(c: Vector2) -> Array:
+	var img := root.get_texture().get_image()
+	var out: Array = []
+	for dx in range(-8, 9):
+		for dy in range(-8, 9):
+			out.append(img.get_pixel(int(c.x) + dx, int(c.y) + dy))
+	return out
+
+
+func _t8() -> void:
+	var id := "T8-02"
+	m._load_from(T.fix("rede_unica.esg"))
+	m.opts["osnap"] = false
+	m._mostrar("tracado")
+	var p = m.plan
+	p.ajustar(Rect2(-60, -60, 220, 120), false)
+	var alvo: Dictionary = Net.achar_no(m.proj, "1")
+	var c: Vector2 = p.w2s(Net.pos(alvo)) + p.get_global_rect().position
+	p._right_press(p.w2s(Vector2(-40, 30)), false)
+	p._tracar_ate(p.w2s(Net.pos(alvo)), int(alvo["id"]))
+	await _frames()
+	var antes := _patch(c)
+	var ok: bool = m.escolher_tipo_tl("TP")
+	await _frames()
+	var depois := _patch(c)
+	var mudou := 0
+	for k in antes.size():
+		if not _cor_perto(antes[k], depois[k], 0.25):
+			mudou += 1
+	T.check(id, ok and str(alvo["tipo"]) == "TP" and mudou >= 15,
+		"símbolo do nó 1 redesenhado na tela logo depois da escolha (TL → TIL de passagem: %d px mudaram, sem Ctrl+R)" % mudou)
+	await _t808()
+
+
+## Pixels vermelhos (rótulo do trecho) num retângulo em volta do meio do trecho.
+func _vermelhos(c: Vector2) -> int:
+	var img := root.get_texture().get_image()
+	var n := 0
+	for dx in range(-60, 61):
+		for dy in range(-30, 31):
+			var q := img.get_pixel(int(c.x) + dx, int(c.y) + dy)
+			if q.r > 0.55 and q.g < 0.35 and q.b < 0.35:
+				n += 1
+	return n
+
+
+func _t808() -> void:
+	var id := "T8-08"
+	m._novo()
+	m._mostrar("tracado")
+	var p = m.plan
+	var a := Net.novo_no(m.proj, Vector2(0, 0), 100.0, true, "TL")
+	var b := Net.novo_no(m.proj, Vector2(45.32, 0), 99.0, true, "PV")
+	Net.novo_trecho(m.proj, m.db, int(a["id"]), int(b["id"]), "C1")
+	m.on_changed("traçado")
+	p.ajustar(Rect2(-10, -30, 65, 60), false)
+	m.opts["rotulo_resultado"] = true
+	p.redesenhar()
+	await _frames()
+	var c: Vector2 = p.w2s(Vector2(22.66, 0)) + p.get_global_rect().position
+	var com := _vermelhos(c)
+	m.opts["rotulo_resultado"] = false
+	p.redesenhar()
+	await _frames()
+	var sem := _vermelhos(c)
+	m.opts["rotulo_resultado"] = true
+	T.check(id, com > 15 and sem < com / 4, "extensão em vermelho junto ao trecho, sem cálculo (%d px vermelhos; com rótulos desligados: %d)" % [com, sem])

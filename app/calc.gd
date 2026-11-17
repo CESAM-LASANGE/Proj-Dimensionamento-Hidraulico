@@ -7,7 +7,7 @@ const Net = preload("res://net.gd")
 const Cadastro = preload("res://cadastro.gd")
 
 ## Versão do motor de cálculo (entra no identificador de rastreabilidade dos resultados).
-const MOTOR_VERSAO := "motor-3.1"
+const MOTOR_VERSAO := "motor-3.2"
 ## Configuração normativa adotada (aparece no memorial).
 const NORMA := "ABNT NBR 9649:1986 (projeto de redes coletoras de esgoto sanitário) — critérios: vazão mínima, tensão trativa, lâmina máxima 75% / 50%, velocidade crítica"
 
@@ -313,6 +313,14 @@ static func alertas_rede(proj: Dictionary) -> Array:
 			out.append({"tipo": "sem_caida", "trechos": [str(t["nome"])], "texto":
 				"Trecho %s com terreno sem caimento: cota do terreno a jusante (%s m) %s a de montante (%s m). O coletor vai ficar mais profundo; confira as cotas ou o sentido." % [
 				t["nome"], _br(cj, 3), "igual" if is_equal_approx(cj, cm) else "maior que", _br(cm, 3)]})
+	# TL que recebe rede (projeto anterior à fase 8): o tipo precisa ser escolhido (SPEC-8.03)
+	for n in Net.tls_no_meio(proj):
+		var chegando: Array = []
+		for t in Net.entradas(proj, int(n["id"])):
+			chegando.append(str(t["nome"]))
+		out.append({"tipo": "tl_meio", "trechos": chegando, "texto":
+			"O nó %s é TL (terminal de limpeza), mas recebe o trecho %s: TL é só início de rede. Abra o nó e escolha PV, PI ou TIL de passagem." % [
+			str(n["nome"]), ", ".join(PackedStringArray(chegando))]})
 	return out
 
 
@@ -415,6 +423,16 @@ static func calcular(proj: Dictionary, db: Dictionary, cota_fn: Callable) -> Dic
 			r_out["obs"].append("Tubo de queda no nó %s (desnível de %s m)." % [str(nd["nome"]), _br(queda, 2)])
 			if int(r_out["status"]) == 0:
 				r_out["status"] = 1
+		# TIL de passagem: peça de DN 100 a 300 (fase 8; limite provisório, Q1)
+		if tipo == "TP":
+			for c in conex:
+				if float(c["d"]) > Db.TIL_PASSAGEM_DN_MAX + 0.5:
+					var alvo = r_out if r_out != null else rows.get(_trecho_por_nome(rows, str(c["trecho"])))
+					if alvo != null:
+						alvo["obs"].append("Verifique: o TIL de passagem %s aceita até DN %d (trecho %s com ø%d)." % [
+							str(nd["nome"]), int(Db.TIL_PASSAGEM_DN_MAX), str(c["trecho"]), int(c["d"])])
+						alvo["status"] = maxi(int(alvo["status"]), 1)
+					break
 	# observações na ordem dos coletores
 	for sq in Net.sequencias(proj):
 		for tid in sq["trechos"]:
@@ -442,8 +460,15 @@ static func calcular(proj: Dictionary, db: Dictionary, cota_fn: Callable) -> Dic
 	# mas não mudam o status dos trechos nem a luz, que continua refletindo só a hidráulica
 	res["alertas"] = alertas_rede(proj)
 	for al in res["alertas"]:
-		res["obs"].append([", ".join(PackedStringArray(al["trechos"])) if al["tipo"] == "sem_caida" else "Rede", "Alerta: " + str(al["texto"])])
+		res["obs"].append([", ".join(PackedStringArray(al["trechos"])) if al["tipo"] in ["sem_caida", "tl_meio"] else "Rede", "Alerta: " + str(al["texto"])])
 	return res
+
+
+static func _trecho_por_nome(rows: Dictionary, nome: String) -> int:
+	for tid in rows.keys():
+		if str(rows[tid]["nome"]) == nome:
+			return int(tid)
+	return -1
 
 
 static func _avaliar(p: Dictionary, t: Dictionary, dd: float, l: float, ct_m: float, ct_j: float, recob: float,
@@ -484,8 +509,22 @@ static func _avaliar(p: Dictionary, t: Dictionary, dd: float, l: float, ct_m: fl
 	var lim := YD_MAX
 	if float(hf["v"]) > vc:
 		lim = 0.5
-	var ok: bool = i > 0.0 and bool(hf["ok"]) and float(hf["yd"]) <= lim + 1e-9
-	return {"d": dd, "cc_m": cc_m, "cc_j": cc_j, "i": i, "imin": imin, "hf": hf, "vc": vc, "lim": lim, "ok": ok, "vred": vred}
+	var ok_f: bool = bool(hf["ok"]) and float(hf["yd"]) <= lim + 1e-9
+	# Lâmina também com a vazão de início de plano quando ela é maior que a de fim
+	# (motor 3.2, pedido de 17/11/2026: "a lâmina não pode dar maior que 75% nunca").
+	# Com início ≤ fim a verificação de início nunca é mais restritiva (y/D e v/vc crescem
+	# com a vazão), por isso só é feita quando o início é maior: os demais casos ficam idênticos.
+	var ok_i := true
+	var lim_i := YD_MAX
+	var hi := {}
+	if qd_i > qd_f + 1e-9:
+		hi = escoamento(qd_i / 1000.0, d, i, rug)
+		if float(hi["v"]) > 6.0 * sqrt(G * float(hi["rh"])):
+			lim_i = 0.5
+		ok_i = bool(hi["ok"]) and float(hi["yd"]) <= lim_i + 1e-9
+	var ok: bool = i > 0.0 and ok_f and ok_i
+	return {"d": dd, "cc_m": cc_m, "cc_j": cc_j, "i": i, "imin": imin, "hf": hf, "vc": vc, "lim": lim, "ok": ok, "vred": vred,
+		"ok_f": ok_f, "ok_i": ok_i, "hi": hi, "lim_i": lim_i}
 
 
 static func _dim(p: Dictionary, db: Dictionary, t: Dictionary, ni: Dictionary, nf: Dictionary, l: float,
@@ -566,8 +605,12 @@ static func _dim(p: Dictionary, db: Dictionary, t: Dictionary, ni: Dictionary, n
 	if bool(t.get("fixa_d", false)) and d < d_up - 0.5:
 		obs.append("Verifique: diâmetro fixado menor que o do trecho de montante.")
 		status = maxi(status, 1)
-	if not bool(esc["ok"]) and i > 0.0:
+	if not bool(esc["ok_f"]) and i > 0.0:
 		obs.append("Verifique: lâmina final y/D = %s maior que o limite de %s." % [_br(float(hf["yd"]), 2), _br(float(esc["lim"]), 2)])
+		status = 2
+	if not bool(esc["ok_i"]) and i > 0.0:
+		obs.append("Verifique: lâmina inicial y/D = %s maior que o limite de %s (vazão de início maior que a de fim)." % [
+			_br(float(esc["hi"]["yd"]), 2), _br(float(esc["lim_i"]), 2)])
 		status = 2
 	if sigma < float(p["tensao_min"]) - 0.005:
 		obs.append("Verifique: tensão trativa de %s Pa menor que a mínima." % _br(sigma, 2))
@@ -577,6 +620,9 @@ static func _dim(p: Dictionary, db: Dictionary, t: Dictionary, ni: Dictionary, n
 		status = maxi(status, 1)
 	if float(esc["lim"]) < YD_MAX and bool(esc["ok"]):
 		obs.append("Velocidade final maior que a crítica: lâmina limitada a 50%.")
+		status = maxi(status, 1)
+	if float(esc["lim_i"]) < YD_MAX and bool(esc["ok"]):
+		obs.append("Velocidade inicial maior que a crítica: lâmina limitada a 50%.")
 		status = maxi(status, 1)
 	if pc_m > pmax + 1e-6:
 		obs.append("Verifique: Prof. a montante é maior que prof. máxima")

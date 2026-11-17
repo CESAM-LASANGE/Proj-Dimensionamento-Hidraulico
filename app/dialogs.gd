@@ -598,8 +598,8 @@ func abrir_dimensionamento() -> void:
 		g.add_child(le)
 		reg.call(df[0], le, df[4])
 		fatores[df[0]] = df[3]
-	var numauto := _chk("Numeração automática de nós e trechos", bool(p["num_auto"]))
-	reg.call("num_auto", numauto, "Renumera nós, trechos e coletores no padrão de redes de esgoto (coletor 1 = maior conjunto contíguo).")
+	var numauto := _chk("Numeração automática de PVs e trechos", bool(p["num_auto"]))
+	reg.call("num_auto", numauto, "Renumera PVs, trechos e coletores no padrão de redes de esgoto (coletor 1 = maior conjunto contíguo).")
 	gg[1].add_child(numauto)
 	# Critérios
 	var pcr := _vbox(8)
@@ -1402,13 +1402,16 @@ const AJUDA := """[b]DimEsgoto — comandos do traçado[/b]
 
 • O traçado de cada coletor é feito sempre de [b]montante para jusante[/b]. Para criar um afluente, termine o traçado clicando (botão 1) sobre um nó existente.
 • Regras da rede: o afluente só pode ser ligado a um PV que já tenha saída (trecho de jusante), e cada PV recebe no máximo 3 trechos. Ligações fora dessas regras são recusadas com um aviso.
+• Ao ligar um trecho num TL de início de rede, o programa pergunta se ele passa a ser poço de visita (PV), poço de inspeção (PI) ou TIL de passagem. Cancelar desiste da ligação. Um nó que passa a receber 2 ou 3 trechos vira PV automaticamente.
+• Logo depois de traçar, a extensão do trecho aparece em vermelho junto a ele. Depois de dimensionar, o rótulo mostra também o diâmetro e a declividade.
 • Caixa de seleção: arraste o botão 1 numa área vazia; entra tudo o que estiver inteiramente dentro da caixa (nós e trechos com os dois nós dentro). Ctrl soma à seleção. Esc desfaz a seleção.
 • Del apaga a seleção, sempre com confirmação. Apagar um ponto intermediário une os dois trechos; nós que ficam sem trechos saem junto, sem deixar resíduos. Não é possível apagar o trecho de jusante de um PV que recebe dois ou mais trechos, nem um PV com duas ou mais chegadas, porque esses trechos ficariam sem saída.
 • Roda do mouse: zoom no cursor. Botão do meio: desloca a vista. Esc: cancela o comando. Para inserir um nó no meio de um trecho, use Trechos › Divide trecho.
 • OSNAP (F10, botão na barra inferior): magnetismo. Perto de um PV, ponto cotado, vértice de rua, curva de nível ou rua, o cursor gruda no elemento, que aparece marcado em verde com o nome. Um PV colocado sobre um ponto cotado recebe a cota dele; sobre uma curva, a cota da curva, sem interpolação.
 • ORTO (F9): o trecho em traçado e o nó arrastado ficam só na horizontal ou na vertical. O osnap tem prioridade sobre o orto.
 • Durante o traçado, o círculo azul em volta do cursor é o raio de busca da interpolação (Opções › Cálculo automático de cotas). As retas cinzas e a reta magenta mostram as curvas usadas, e o texto mostra a cota que o próximo PV vai receber.
-• Ao dimensionar, um alerta avisa se há trechos isolados, que não deságuam na rede principal, e trechos com terreno sem caimento. O cálculo é feito assim mesmo, e os alertas ficam na Planilha de Observações.
+• Ao dimensionar, um alerta avisa se há trechos isolados, que não deságuam na rede principal, trechos com terreno sem caimento e TLs no meio da rede (projetos antigos). O cálculo é feito assim mesmo, e os alertas ficam na Planilha de Observações.
+• A planta com resultados (Arquivos › Exporta planta para DXF) só sai com o resultado aprovado e atualizado. Para exportar só o traçado, use Arquivos › Exporta traçado para DXF (sem resultados).
 • Arquivos › Importa rede de DXF… lê linhas e polilinhas dos layers escolhidos como coletores (desenhados de montante para jusante). Arquivos › Cadastro e SIG › Exporta rede (GeoPackage)… gera um .gpkg com as camadas de PVs e trechos.
 • Cotas do terreno: com base topográfica carregada (Arquivos › Lê DXF…), o modo do traçado (C+C, PRX, INT na barra inferior) calcula a cota de cada nó criado. Nós sem cota confirmada ficam com um X vermelho.
 
@@ -1420,6 +1423,9 @@ Ctrl+L traçado da rede • Ctrl+X exibição de DXF's • Ctrl+S cálculo autom
 
 [b]Registro de erros[/b]
 Ajuda › Registro de erros… (ou o aviso vermelho na barra de status) mostra cada erro com o local no código, o rastreio e as últimas ações feitas antes dele. Os arquivos ficam na pasta de dados do usuário (Linux: ~/.local/share/godot/app_userdata/DimEsgoto/logs) e ocupam no máximo cerca de 10 MB: o registro é rotacionado, erros repetidos são contados em vez de gravados de novo e os arquivos mais antigos são apagados automaticamente.
+
+[b]Atualizações[/b]
+Ao abrir, o programa procura versão nova no GitHub. Se houver, ele mostra as novidades e pergunta antes de instalar: baixa, confere a assinatura e troca o executável, e a versão nova vale a partir da próxima abertura. Ajuda › Verificar atualizações… procura na hora; Ajuda › Verificar atualizações ao abrir liga ou desliga a busca automática. Deixe a pasta do programa num lugar onde você possa gravar (Documentos, Área de Trabalho).
 
 [b]Planilhas[/b]
 Colunas brancas são editáveis; amarelas, só leitura. Clique numa célula já selecionada para editar. Botão 2 nas colunas de lista (tipo do nó, material, superfície, escoramento, situação, critério) abre as opções do banco de dados e aplica a todas as células selecionadas da coluna. Ctrl+C / Ctrl+V copiam e colam blocos de células (também com Excel/LibreOffice). As primeiras colunas (coletor, trecho, PV e extensão) ficam fixas ao rolar para a direita. A barra acima das planilhas exporta a aba atual em CSV, XLSX, HTML ou PDF, ou todas as planilhas numa pasta de trabalho XLSX.

@@ -356,7 +356,7 @@ static func pdf(titulo: String, linhas: Array) -> PackedByteArray:
 
 # ------------------------------------------------------------------ DXF da planta
 
-static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary, db: Dictionary, identificador := "") -> String:
+static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary, db: Dictionary, identificador := "", nota := "") -> String:
 	var esc := maxf(float(opts.get("exp_escala", 1000.0)), 1.0)
 	var h := 0.0025 * esc
 	var rr := 0.0018 * esc
@@ -420,6 +420,8 @@ static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary
 				if tipo in ["CP", "PI"]:
 					w.linha("PV", p + Vector2(-rr, -rr) * 0.7, p + Vector2(rr, rr) * 0.7)
 					w.linha("PV", p + Vector2(-rr, rr) * 0.7, p + Vector2(rr, -rr) * 0.7)
+				elif tipo == "TP":
+					w.circulo("PV", p, rr * 0.5)
 			var sig := str(Db.pv(db, tipo)["sigla_imp"])
 			var dn := ""
 			for t in proj["trechos"]:
@@ -473,6 +475,10 @@ static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary
 	w.texto("LEGENDA", ly0, h, "LEGENDA")
 	var itens := [["PV", "Poço de visita"], ["TL", "Terminal de limpeza"], ["TQ", "PV com tubo de queda"], ["SETA", "Sentido do escoamento"],
 		["TXT", "Trecho-extensão / %%c diâmetro declividade"]]
+	for n in proj["nodes"]:
+		if str(n["tipo"]) == "TP":
+			itens.insert(2, ["TP", "TIL de passagem"])
+			break
 	for i in itens.size():
 		var py := ly0 - Vector2(0, h * 2.0 * (i + 1))
 		match str(itens[i][0]):
@@ -480,6 +486,9 @@ static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary
 				w.circulo("LEGENDA", py + Vector2(h, h * 0.4), rr)
 			"TL":
 				w.circulo("LEGENDA", py + Vector2(h, h * 0.4), rr * 0.45)
+			"TP":
+				w.circulo("LEGENDA", py + Vector2(h, h * 0.4), rr)
+				w.circulo("LEGENDA", py + Vector2(h, h * 0.4), rr * 0.5)
 			"TQ":
 				w.circulo("LEGENDA", py + Vector2(h, h * 0.4), rr)
 				w.linha("LEGENDA", py + Vector2(h, h * 0.4 - rr), py + Vector2(h, h * 0.4 + rr))
@@ -488,6 +497,8 @@ static func dxf_planta(proj: Dictionary, res: Dictionary, topo, opts: Dictionary
 		w.texto("LEGENDA", py + Vector2(h * 3.0, 0), h * 0.8, str(itens[i][1]))
 	if identificador != "":
 		w.texto("LEGENDA", ly0 - Vector2(0, h * 14.0), h * 0.7, "Identificador do resultado: " + identificador)
+	if nota != "":
+		w.texto("LEGENDA", ly0 - Vector2(0, h * (15.5 if identificador != "" else 14.0)), h * 0.9, nota)
 	if bool(opts.get("exp_pontos", true)) and topo.pontos.size() > 0:
 		w.layer("PONTOS_COTADOS", 4)
 		for pt in topo.pontos:

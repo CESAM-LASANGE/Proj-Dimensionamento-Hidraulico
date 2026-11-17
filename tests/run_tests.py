@@ -15,12 +15,15 @@ Só usa a biblioteca padrão do Python + o Godot 4.4.
 """
 import argparse
 import datetime
+import functools
+import http.server
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(TESTS)
@@ -46,10 +49,30 @@ FASES = {
         ["T6-01", "T6-02", "T6-03", "T6-04", "T6-05", "T6-06", "T6-07", "T6-08", "T6-09", "T6-10"]),
     7: ("Fase 7 — traçado assistido e alertas de cálculo", ["test_tracado.gd"], ["test_grafico.gd"],
         ["T7-01", "T7-02", "T7-03", "T7-04", "T7-05"]),
+    8: ("Fase 8 — pedidos do engenheiro (TL, lâmina, numeração…)", ["test_fase8.gd"], ["test_grafico.gd"],
+        ["T8-01", "T8-02", "T8-03", "T8-04", "T8-05", "T8-06", "T8-07", "T8-08", "T8-09", "T8-10", "T8-11"]),
+    9: ("Fase 9 — atualização automática", ["test_fase9.gd"], [],
+        ["T9-01", "T9-02", "T9-03", "T9-04", "T9-05", "T9-06", "T9-07", "T9-08"]),
 }
 # ID de regressão de cada fase: calculado pelo runner (nenhum FAIL nas fases anteriores nesta rodada)
-REGRESSAO = {5: "T5-09", 6: "T6-10", 7: "T7-05"}
+REGRESSAO = {5: "T5-09", 6: "T6-10", 7: "T7-05", 8: "T8-11", 9: "T9-08"}
 ERROS_FATAIS = re.compile(r"SCRIPT ERROR|Parse Error|Program crashed|Segmentation fault|handle_crash", re.I)
+
+
+class _HttpSilencioso(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+
+def servidor_teste():
+    """Servidor HTTP local que faz o papel do GitHub nos testes da atualização (fase 9).
+    Os testes gravam os arquivos em DIMESGOTO_TESTE_WWW e baixam de DIMESGOTO_TESTE_HTTP."""
+    www = tempfile.mkdtemp(prefix="dimesgoto-www-")
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_HttpSilencioso, directory=www))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["DIMESGOTO_TESTE_WWW"] = www
+    os.environ["DIMESGOTO_TESTE_HTTP"] = "http://127.0.0.1:%d/" % srv.server_address[1]
+    return srv, www
 
 
 def rodar(godot, args, xdg, timeout=900):
@@ -173,6 +196,7 @@ def main():
     if not godot:
         print("Godot 4 não encontrado (defina GODOT).")
         return 2
+    srv, www = servidor_teste()
     tem_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")) and not a.sem_grafico
     anterior = ler_anterior()
     inicio = datetime.datetime.now()
@@ -194,7 +218,7 @@ def main():
                 continue
             if grafico and not tem_display:
                 for i in ids:
-                    if i in ("T3-05", "T4-05", "T5-07", "T6-08", "T7-01", "T7-02"):
+                    if i in ("T3-05", "T4-05", "T5-07", "T6-08", "T7-01", "T7-02", "T8-02", "T8-08", "T8-09"):
                         resultados[i] = juntar(resultados.get(i), {"estado": "SKIP",
                             "mensagem": "parte gráfica (%s) não executada: sem display" % sc, "dados": {}})
                 continue

@@ -323,6 +323,14 @@ func _z(v: float) -> String:
 	return ("%.2f" % v).replace(".", ",")
 
 
+## Texto do rótulo vermelho do trecho: com resultado, "ø  L m  I=…"; sem resultado,
+## só a extensão ("45,32 m").
+func rotulo_trecho(t: Dictionary, r, nodes: Dictionary) -> String:
+	if r != null:
+		return "ø%d  %s m  I=%s" % [int(r["d"]), main.fmt(r["L"], 1), main.fmt(r["i"], 4)]
+	return "%s m" % main.fmt(Net.comprimento(nodes, t), 2)
+
+
 func _draw_rede(c: Control, _vis: Rect2, pal: Dictionary) -> void:
 	var opts: Dictionary = main.opts
 	var nodes := Net.node_map(main.proj)
@@ -332,7 +340,9 @@ func _draw_rede(c: Control, _vis: Rect2, pal: Dictionary) -> void:
 	var azul := Color(0.12, 0.25, 0.75)
 	var verm := Color(0.85, 0.1, 0.1)
 	var rot_tr := bool(opts.get("rotulo_trecho", true))
-	var rot_res := bool(opts.get("rotulo_resultado", true)) and valido
+	# rótulo vermelho do trecho: resultado (ø, L, I) depois de dimensionar; antes disso,
+	# só a extensão, logo depois de traçar (fase 8, SPEC-8.08)
+	var rot_res := bool(opts.get("rotulo_resultado", true))
 	for t in main.proj["trechos"]:
 		var a = nodes.get(int(t["ni"]))
 		var b = nodes.get(int(t["nf"]))
@@ -358,10 +368,10 @@ func _draw_rede(c: Control, _vis: Rect2, pal: Dictionary) -> void:
 		c.draw_colored_polygon(PackedVector2Array([tip, tip - dir * 3.5 + nrm * 2.5, tip - dir * 3.5 - nrm * 2.5]), bcol)
 		if rot_tr:
 			c.draw_string(_font, mid + Vector2(8, -6), str(t["nome"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(0.05, 0.05, 0.2))
-		if rot_res and r != null:
-			var txt := "ø%d  %s m  I=%s" % [int(r["d"]), main.fmt(r["L"], 1), main.fmt(r["i"], 4)]
+		if rot_res:
+			var txt := rotulo_trecho(t, r, nodes)
 			var tsz := _font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10)
-			if sa.distance_to(sb) <= tsz.x + 40.0:
+			if r != null and sa.distance_to(sb) <= tsz.x + 40.0:
 				txt = "ø%d  %s" % [int(r["d"]), main.fmt(r["i"], 4)]
 				tsz = _font.get_string_size(txt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10)
 			if sa.distance_to(sb) > tsz.x + 24.0:
@@ -425,6 +435,11 @@ func _simbolo(c: Control, s: Vector2, tipo: String, col: Color) -> void:
 			c.draw_circle(s, r, Color.WHITE)
 			c.draw_arc(s, r, 0, TAU, 20, col, 1.4)
 			c.draw_circle(s, 1.6, col)
+		"TP":
+			# TIL de passagem: círculo com anel interno
+			c.draw_circle(s, r, Color.WHITE)
+			c.draw_arc(s, r, 0, TAU, 20, col, 1.4)
+			c.draw_arc(s, r * 0.5, 0, TAU, 14, col, 1.2)
 		_:
 			c.draw_circle(s, r, Color.WHITE)
 			c.draw_arc(s, r, 0, TAU, 20, col, 1.4)
@@ -1005,6 +1020,34 @@ func _continuar_de(nid: int) -> void:
 	over.queue_redraw()
 
 
+## Liga o traçado em andamento ao nó existente "nid" (afluente). "tipo" é o novo tipo
+## do TL de início de rede, quando ele precisa ser escolhido. Um passo só de desfazer.
+func concluir_ligacao(nid: int, tipo: String) -> bool:
+	if not tracing or not Net.node_map(main.proj).has(trace_from):
+		return false
+	var r := Net.ligar(main.proj, main.db, trace_from, nid, trace_col, tipo)
+	if not bool(r["ok"]):
+		main.set_status(str(r["motivo"]))
+		return false
+	tracing = false
+	trace_from = -1
+	main.on_changed("traçado")
+	var extra := ""
+	if tipo != "":
+		extra = " O TL %s passou a ser %s." % [Net.nome_no(main.proj, nid), _nome_tipo(tipo)]
+	for c in r["convertidos"]:
+		extra += " O nó %s passou a ser PV (%d entradas)." % [str(c["nome"]), Net.entradas(main.proj, int(c["id"])).size()]
+	main.set_status("Trecho %s ligado ao nó existente (afluente). Traçado finalizado.%s" % [str(r["trecho"]["nome"]), extra])
+	return true
+
+
+func _nome_tipo(tipo: String) -> String:
+	for o in Net.OPCOES_TL:
+		if o[0] == tipo:
+			return o[1]
+	return tipo
+
+
 func _tracar_ate(s: Vector2, nid: int, cur := {}) -> void:
 	if nid == trace_from:
 		return
@@ -1019,11 +1062,12 @@ func _tracar_ate(s: Vector2, nid: int, cur := {}) -> void:
 			else:
 				main.set_status(str(regra["motivo"]))
 			return
-		var t := Net.novo_trecho(main.proj, main.db, trace_from, nid, trace_col)
-		tracing = false
-		trace_from = -1
-		main.on_changed("traçado")
-		main.set_status("Trecho %s ligado ao nó existente (afluente). Traçado finalizado." % str(t["nome"]))
+		if Net.precisa_escolher_tipo(main.proj, nid):
+			# TL de início de rede: o usuário escolhe PV, PI ou TIL de passagem (SPEC-8.02);
+			# a ligação só acontece depois da escolha (concluir_ligacao)
+			main.perguntar_tipo_tl(trace_from, nid)
+			return
+		concluir_ligacao(nid, "")
 		return
 	if cur.is_empty():
 		cur = ponto_cursor(s)

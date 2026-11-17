@@ -229,6 +229,70 @@ static func pode_ligar(proj: Dictionary, de: int, ate: int) -> Dictionary:
 	return {"ok": true, "regra": "", "motivo": ""}
 
 
+## Órgãos de passagem (1 entrada e 1 saída) que viram PV automaticamente, sem mensagem,
+## quando passam a receber 2 ou mais trechos (pedido de 17/11/2026, SPEC-8.03).
+## TQ e TT já são PV; TR (TIL radial) é peça de várias entradas e não muda.
+const VIRAM_PV := ["TL", "PI", "TP", "CP"]
+## Opções quando um TL de início de rede passa a receber um trecho (SPEC-8.02).
+const OPCOES_TL := [["PV", "Poço de visita (PV)"], ["PI", "Poço de inspeção (PI)"], ["TP", "TIL de passagem"]]
+
+
+## O nó de destino é um TL de início de rede (sem entradas)? Ligar nele exige escolher
+## o novo tipo: o TL deixa de ser ponta de rede.
+static func precisa_escolher_tipo(proj: Dictionary, ate: int) -> bool:
+	var n = node_map(proj).get(ate)
+	return n != null and str(n["tipo"]) == "TL" and entradas(proj, ate).is_empty()
+
+
+## Liga de → ate com um trecho novo, aplicando as regras de rede:
+##   • pode_ligar (saída, máximo de entradas, laço);
+##   • TL de início de rede: exige "tipo" (PV, PI ou TP), senão regra "escolher_tipo";
+##   • 2 ou mais entradas: o nó vira PV (ajustar_tipos).
+## Retorna {ok, regra, motivo, trecho, convertidos}.
+static func ligar(proj: Dictionary, db: Dictionary, de: int, ate: int, coletor: String, tipo := "") -> Dictionary:
+	var r := pode_ligar(proj, de, ate)
+	if not bool(r["ok"]):
+		r["trecho"] = {}
+		r["convertidos"] = []
+		return r
+	if precisa_escolher_tipo(proj, ate):
+		var validos: Array = []
+		for o in OPCOES_TL:
+			validos.append(o[0])
+		if tipo == "":
+			return {"ok": false, "regra": "escolher_tipo", "trecho": {}, "convertidos": [],
+				"motivo": "O TL %s é início de rede: escolha o novo tipo do nó (PV, PI ou TIL de passagem)." % nome_no(proj, ate)}
+		if not tipo in validos:
+			return {"ok": false, "regra": "tipo_invalido", "trecho": {}, "convertidos": [],
+				"motivo": "Tipo \"%s\" não é uma opção para o TL que recebe rede." % tipo}
+		node_map(proj)[ate]["tipo"] = tipo
+	var t := novo_trecho(proj, db, de, ate, coletor)
+	return {"ok": true, "regra": "", "motivo": "", "trecho": t, "convertidos": ajustar_tipos(proj)}
+
+
+## Nós de passagem (VIRAM_PV) com 2 ou mais entradas passam a ser PV. Retorna os
+## convertidos: [{id, nome, de}]. Não converte de volta quando um nó perde entradas.
+static func ajustar_tipos(proj: Dictionary) -> Array:
+	var lig := ligacoes(proj)
+	var out: Array = []
+	for n in proj["nodes"]:
+		if str(n["tipo"]) in VIRAM_PV and lig["inc"].get(int(n["id"]), []).size() >= 2:
+			out.append({"id": int(n["id"]), "nome": str(n["nome"]), "de": str(n["tipo"])})
+			n["tipo"] = "PV"
+	return out
+
+
+## TLs que recebem exatamente um trecho (projetos anteriores à fase 8): o tipo precisa
+## ser escolhido pelo projetista. Retorna os nós.
+static func tls_no_meio(proj: Dictionary) -> Array:
+	var lig := ligacoes(proj)
+	var out: Array = []
+	for n in proj["nodes"]:
+		if str(n["tipo"]) == "TL" and lig["inc"].get(int(n["id"]), []).size() == 1:
+			out.append(n)
+	return out
+
+
 ## Remove nós sem nenhum trecho (resíduos). "manter" preserva um nó (ex.: início do traçado em andamento).
 static func remover_orfaos(proj: Dictionary, manter := -1) -> int:
 	var usados := {}
